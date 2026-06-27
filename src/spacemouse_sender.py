@@ -54,7 +54,7 @@ class SpaceMouseReader:
         while self.running:
             try:
                 # 阻塞读取，有数据就处理
-                data = self.dev.read(64, timeout_ms=10)
+                data = self.dev.read(64, timeout_ms=1)
                 if not data:
                     continue
                 
