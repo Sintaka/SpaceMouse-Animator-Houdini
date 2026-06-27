@@ -4,3 +4,69 @@ HID\VID_046D&PID_C627
 HID\VID_046D&UP:0001_U:0008
 HID_DEVICE_UP:0001_U:0008
 HID_DEVICE
+
+
+部分运行时(spacemouse_read.py):
+D:\code\dev\Houdini\spaceMouse1>C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe d:/code/dev/Houdini/spaceMouse1/spacemouse_read.py
+正在搜索 SpaceExplorer (VID=0x046D, PID=0xC627)...
+
+找到 7 个 3Dconnexion 设备:
+  - PID=0xC547, Usage Page=1, Usage=2
+    路径: b'\\\\?\\HID#VID_046D&PID_C547&MI_00#8&1a52921b&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+  - PID=0xC627, Usage Page=1, Usage=8
+    路径: b'\\\\?\\HID#VID_046D&PID_C627#9&156471ab&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+  - PID=0xC547, Usage Page=1, Usage=6
+    路径: b'\\\\?\\HID#VID_046D&PID_C547&MI_01&Col01#8&984aba7&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}\\KBD'
+  - PID=0xC547, Usage Page=65280, Usage=1
+    路径: b'\\\\?\\HID#VID_046D&PID_C547&MI_02&Col01#8&2d5be969&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+  - PID=0xC547, Usage Page=12, Usage=1
+    路径: b'\\\\?\\HID#VID_046D&PID_C547&MI_01&Col02#8&984aba7&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+  - PID=0xC547, Usage Page=65280, Usage=2
+    路径: b'\\\\?\\HID#VID_046D&PID_C547&MI_02&Col02#8&2d5be969&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+  - PID=0xC547, Usage Page=1, Usage=128
+    路径: b'\\\\?\\HID#VID_046D&PID_C547&MI_01&Col03#8&984aba7&0&0002#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+
+正在打开: PID=0xC627
+✓ 已连接!
+制造商: 3Dconnexion
+产品名: Space Explorer
+
+移动 SpaceExplorer 查看数据 (Ctrl+C 退出)
+
+  报告ID                                         原始数据 (hex)
+------------------------------------------------------------
+     1  01 00 00 00 00 00 00
+     2  02 00 00 02 00 00 00
+       -> 平移: X=   +0  Y=   +2  Z=   +0
+     3  01 00 00 00 00 00 00
+     4  02 00 00 0A 00 00 00
+       -> 平移: X=   +0  Y=  +10  Z=   +0
+     5  01 00 00 00 00 00 00
+     6  02 00 00 1C 00 00 00
+       -> 平移: X=   +0  Y=  +28  Z=   +0
+     7  01 00 00 00 00 01 00
+     8  02 00 00 35 00 00 00
+       -> 平移: X=   +0  Y=  +53  Z=   +0
+     9  01 00 00 00 00 00 00
+    10  02 00 00 53 00 00 00
+       -> 平移: X=   +0  Y=  +83  Z=   +0
+    11  01 00 00 00 00 00 00
+    12  02 00 00 66 00 00 00
+       -> 平移: X=   +0  Y= +102  Z=   +0
+    13  01 00 00 01 00 00 00
+       -> 按钮: 0x00010000
+    14  02 00 00 74 00 00 00
+       -> 平移: X=   +0  Y= +116  Z=   +0
+    15  01 00 00 08 00 00 00
+       -> 按钮: 0x00080000
+    16  02 00 00 84 00 00 00
+       -> 平移: X=   +0  Y= +132  Z=   +0
+    17  01 00 00 0D 00 00 00
+       -> 按钮: 0x000D0000
+    18  02 00 00 8B 00 00 00
+       -> 平移: X=   +0  Y= +139  Z=   +0
+    19  01 00 00 0F 00 00 00
+       -> 按钮: 0x000F0000
+    20  02 00 00 8F 00 00 00
+       -> 平移: X=   +0  Y= +143  Z=   +0
+    21  01 00 00 11 00 00 00
