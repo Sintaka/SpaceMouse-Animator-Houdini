@@ -1,0 +1,65 @@
+# 操作系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude相关文件
+.claude/
+CLAUDE.md
+
+# 依赖目录
+node_modules/
+vendor/
+__pycache__/
+
+# 日志文件
+*.log
+npm-debug.log*
+
+# 环境变量文件
+.env
+.env.local
+.env.*.local
+
+# 构建输出
+dist/
+build/
+_bin/
+_downloaded_resources/
+*.exe
+*.dll
+
+# 临时文件
+.ninja_deps
+.ninja_log
+build.ninja
+
+# CMake文件
+CMakeFiles/
+cmake_install.cmake
+CMakeCache.txt
+# cmake/
+
+# 资源缓存
+deps_cache/
+_deps/
+*.zip
+*.tar.gz
+
+# Resource files
+textures/
+geo/
+
+*.spv
+*.bat
+
+# Reference files
+reference/
+Chat.txt
+Context.txt
