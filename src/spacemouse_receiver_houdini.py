@@ -117,10 +117,32 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             self.status_label.setText(f"错误: {e}")
     
     def move_viewport(self, tx, ty, tz, rx, ry, rz):
-        """移动当前视口相机"""
-        # TODO: 实现视口相机控制
-        # Houdini 的视口相机控制比较复杂，需要通过 scene viewer API
-        pass
+        """移动 /obj/cam1 相机"""
+        try:
+            cam = hou.node('/obj/cam1')
+            if cam is None:
+                self.status_label.setText("错误: /obj/cam1 不存在")
+                return
+            
+            # 检查相机是否有变换参数
+            if not cam.parmTuple('t') or not cam.parmTuple('r'):
+                self.status_label.setText("错误: cam1 没有变换参数")
+                return
+            
+            # 获取当前值
+            t_curr = cam.parmTuple('t').eval()
+            r_curr = cam.parmTuple('r').eval()
+            
+            # 应用相对位移
+            t_new = (t_curr[0] + tx, t_curr[1] + ty, t_curr[2] + tz)
+            r_new = (r_curr[0] + rx, r_curr[1] + ry, r_curr[2] + rz)
+            
+            cam.parmTuple('t').set(t_new)
+            cam.parmTuple('r').set(r_new)
+            
+        except Exception as e:
+            self.status_label.setText(f"错误: {e}")
+
     
     def move_selected_object(self, tx, ty, tz, rx, ry, rz):
         """移动选中的物体"""

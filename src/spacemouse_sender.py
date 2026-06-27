@@ -1,28 +1,31 @@
 """
 SpaceMouse UDP 广播服务
-读取 SpaceExplorer 原始数据，计算相对位移，通过 UDP 发送
+读取 SpaceExplorer 原始数据，实时广播（无限速模式）
 """
 import hid
 import struct
 import socket
 import json
 import time
-from collections import deque
+import threading
 
 # ===== 配置 =====
 VENDOR_3DCONNEXION = 0x046D
 PRODUCT_SPACEEXPLORER = 0xC627
 UDP_HOST = "127.0.0.1"
 UDP_PORT = 9876
-SEND_RATE = 60  # Hz
 
 # ===== SpaceMouse 数据处理 =====
 class SpaceMouseReader:
-    def __init__(self):
+    def __init__(self, broadcaster):
         self.dev = None
-        self.last_translation = [0, 0, 0]
-        self.last_rotation = [0, 0, 0]
+        self.broadcaster = broadcaster
+        self.translation = [0, 0, 0]
+        self.rotation = [0, 0, 0]
         self.button_state = 0
+        self.running = False
+        self.frame_count = 0
+        self.lock = threading.Lock()
         
     def connect(self):
         """连接 SpaceExplorer"""
@@ -37,41 +40,75 @@ class SpaceMouseReader:
         
         self.dev = hid.device()
         self.dev.open_path(devices[0]['path'])
+        self.dev.set_nonblocking(0)  # 阻塞模式，等待数据
         print(f"✓ 已连接: {self.dev.get_product_string()}")
     
-    def read_motion(self):
-        """读取一帧运动数据，返回 (tx, ty, tz, rx, ry, rz, buttons)"""
-        data = self.dev.read(64, timeout_ms=5)
-        if not data:
-            return None
-        
-        report_id = data[0]
-        
-        # Report 2: 平移
-        if report_id == 2 and len(data) >= 7:
-            tx = struct.unpack('<h', bytes(data[1:3]))[0]
-            ty = struct.unpack('<h', bytes(data[3:5]))[0]
-            tz = struct.unpack('<h', bytes(data[5:7]))[0]
-            self.last_translation = [tx, ty, tz]
-        
-        # Report 3: 旋转
-        elif report_id == 3 and len(data) >= 7:
-            rx = struct.unpack('<h', bytes(data[1:3]))[0]
-            ry = struct.unpack('<h', bytes(data[3:5]))[0]
-            rz = struct.unpack('<h', bytes(data[5:7]))[0]
-            self.last_rotation = [rx, ry, rz]
-        
-        # Report 1: 按钮
-        elif report_id == 1 and len(data) >= 5:
-            self.button_state = struct.unpack('<I', bytes(data[1:5]))[0]
-        
-        return {
-            'translation': self.last_translation,
-            'rotation': self.last_rotation,
-            'buttons': self.button_state
-        }
+    def start_reading(self):
+        """启动读取+发送线程"""
+        self.running = True
+        self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self.read_thread.start()
+    
+    def _read_loop(self):
+        """后台线程：读取数据后立刻发送"""
+        while self.running:
+            try:
+                # 阻塞读取，有数据就处理
+                data = self.dev.read(64, timeout_ms=10)
+                if not data:
+                    continue
+                
+                report_id = data[0]
+                should_send = False
+                
+                with self.lock:
+                    # Report 2: 平移
+                    if report_id == 2 and len(data) >= 7:
+                        self.translation[0] = struct.unpack('<h', bytes(data[1:3]))[0]
+                        self.translation[1] = struct.unpack('<h', bytes(data[3:5]))[0]
+                        self.translation[2] = struct.unpack('<h', bytes(data[5:7]))[0]
+                        should_send = True
+                    
+                    # Report 3: 旋转
+                    elif report_id == 3 and len(data) >= 7:
+                        self.rotation[0] = struct.unpack('<h', bytes(data[1:3]))[0]
+                        self.rotation[1] = struct.unpack('<h', bytes(data[3:5]))[0]
+                        self.rotation[2] = struct.unpack('<h', bytes(data[5:7]))[0]
+                        should_send = True
+                    
+                    # Report 1: 按钮
+                    elif report_id == 1 and len(data) >= 5:
+                        self.button_state = struct.unpack('<I', bytes(data[1:5]))[0]
+                        should_send = True
+                    
+                    # 立刻发送并打印
+                    if should_send:
+                        packet = {
+                            'timestamp': time.time(),
+                            'frame': self.frame_count,
+                            'translation': self.translation[:],
+                            'rotation': self.rotation[:],
+                            'buttons': self.button_state
+                        }
+                        self.broadcaster.send(packet)
+                        
+                        # 每次发送都打印
+                        tx, ty, tz = self.translation
+                        rx, ry, rz = self.rotation
+                        print(f"[{self.frame_count:6d}] T:({tx:+5d},{ty:+5d},{tz:+5d}) "
+                              f"R:({rx:+5d},{ry:+5d},{rz:+5d}) BTN:{self.button_state:08X}")
+                        
+                        self.frame_count += 1
+            
+            except Exception as e:
+                if self.running:
+                    print(f"读取错误: {e}")
+                    time.sleep(0.1)
     
     def close(self):
+        self.running = False
+        if hasattr(self, 'read_thread'):
+            self.read_thread.join(timeout=1.0)
         if self.dev:
             self.dev.close()
 
@@ -85,8 +122,11 @@ class UDPBroadcaster:
     
     def send(self, data_dict):
         """发送 JSON 数据包"""
-        msg = json.dumps(data_dict).encode('utf-8')
-        self.sock.sendto(msg, self.addr)
+        try:
+            msg = json.dumps(data_dict).encode('utf-8')
+            self.sock.sendto(msg, self.addr)
+        except Exception as e:
+            print(f"发送错误: {e}")
     
     def close(self):
         self.sock.close()
@@ -95,48 +135,20 @@ class UDPBroadcaster:
 # ===== 主循环 =====
 def main():
     print("=" * 60)
-    print("  SpaceMouse UDP 广播服务")
+    print("  SpaceMouse UDP 广播服务（暴力发送模式）")
     print("=" * 60)
     
-    reader = SpaceMouseReader()
-    reader.connect()
-    
     broadcaster = UDPBroadcaster(UDP_HOST, UDP_PORT)
+    reader = SpaceMouseReader(broadcaster)
+    reader.connect()
+    reader.start_reading()
     
-    frame_time = 1.0 / SEND_RATE
-    frame_count = 0
-    
-    print(f"\n正在广播 (速率: {SEND_RATE} Hz, Ctrl+C 退出)...\n")
+    print(f"\n正在广播 (每个数据包立刻发送，Ctrl+C 退出)...\n")
     
     try:
+        # 主线程只等待退出
         while True:
-            start = time.perf_counter()
-            
-            motion = reader.read_motion()
-            if motion:
-                # 构造数据包
-                packet = {
-                    'timestamp': time.time(),
-                    'frame': frame_count,
-                    'translation': motion['translation'],
-                    'rotation': motion['rotation'],
-                    'buttons': motion['buttons']
-                }
-                
-                broadcaster.send(packet)
-                frame_count += 1
-                
-                # 调试输出
-                if frame_count % 30 == 0:
-                    tx, ty, tz = motion['translation']
-                    rx, ry, rz = motion['rotation']
-                    print(f"[{frame_count:6d}] T:({tx:+4d},{ty:+4d},{tz:+4d}) "
-                          f"R:({rx:+4d},{ry:+4d},{rz:+4d}) BTN:{motion['buttons']:08X}")
-            
-            # 限制帧率
-            elapsed = time.perf_counter() - start
-            if elapsed < frame_time:
-                time.sleep(frame_time - elapsed)
+            time.sleep(1)
     
     except KeyboardInterrupt:
         print("\n\n正在停止...")
