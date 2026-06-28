@@ -16,10 +16,17 @@ Houdini 矩阵 (row-major): v_world = v_local * M
 import hou
 import socket
 import json
+import os
+import xml.etree.ElementTree as ET
 import numpy as np
 from PySide6 import QtCore, QtWidgets
 
 UDP_PORT = 9876
+
+# 3DxWare 驱动配置路径
+DRIVER_CFG = os.path.join(
+    os.environ.get('APPDATA', ''),
+    r'3Dconnexion\3DxWare\Cfg\SideFX_HoudiniFX.xml')
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -139,6 +146,25 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
 
         layout.addLayout(btn_row)
 
+        # ── 驱动开关 ──
+        drv_row = QtWidgets.QHBoxLayout()
+        drv_row.addWidget(QtWidgets.QLabel("3DxWare 驱动:"))
+
+        self.driver_btn = QtWidgets.QPushButton("🎥  相机模式")
+        self.driver_btn.clicked.connect(self.toggle_driver)
+        self.driver_btn.setMinimumHeight(30)
+        self.driver_btn.setToolTip(
+            "切换 3DxWare 驱动的 Houdini 轴开关\n"
+            "相机模式: 驱动控制视口, 我们不动\n"
+            "物体模式: 驱动静音, 我们控制选中物体")
+        drv_row.addWidget(self.driver_btn)
+
+        # 初始状态: 驱动已禁用 (XML 中所有 Enabled=false)
+        self.driver_enabled = False
+        self._update_driver_btn()
+
+        layout.addLayout(drv_row)
+
         # ── 灵敏度 (T/R 一行) ──
         sens = QtWidgets.QGroupBox("灵敏度 (raw / 350 × 幅值)")
         sens_row = QtWidgets.QHBoxLayout()
@@ -220,6 +246,59 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             self.active = True
             self.status_label.setText("已启动，等待数据...")
 
+    # ── 驱动开关 ─────────────────────────────────────────
+
+    def toggle_driver(self):
+        """切换 3DxWare 驱动的 Houdini 轴启用/禁用"""
+        new_state = not self.driver_enabled
+        if self._write_driver_enabled(new_state):
+            self.driver_enabled = new_state
+            self._update_driver_btn()
+
+    def _update_driver_btn(self):
+        if self.driver_enabled:
+            self.driver_btn.setText("🎥  相机模式 (驱动开)")
+            self.driver_btn.setStyleSheet(
+                "QPushButton { background: #2a622a; color: #fff; }")
+        else:
+            self.driver_btn.setText("🧰  物体模式 (驱动关)")
+            self.driver_btn.setStyleSheet(
+                "QPushButton { background: #6a4a1a; color: #fff; }")
+
+    def _write_driver_enabled(self, enable):
+        """修改 SideFX_HoudiniFX.xml 中所有轴的 <Enabled> 值, 保存后驱动实时加载"""
+        try:
+            if not os.path.exists(DRIVER_CFG):
+                self.status_label.setText(f"找不到驱动配置:\n{DRIVER_CFG}")
+                return False
+
+            tree = ET.parse(DRIVER_CFG)
+            root = tree.getroot()
+
+            changed = 0
+            for axis in root.iter('Axis'):
+                en = axis.find('Enabled')
+                if en is not None:
+                    new_val = 'true' if enable else 'false'
+                    if en.text != new_val:
+                        en.text = new_val
+                        changed += 1
+
+            if changed > 0:
+                tree.write(DRIVER_CFG, encoding='UTF-8', xml_declaration=True)
+                self.status_label.setText(
+                    f"驱动: {'启用' if enable else '禁用'} {changed} 个轴 → 已写入\n"
+                    f"3DxWare 实时监控 XML, 约 1 秒内生效")
+            else:
+                self.status_label.setText(
+                    f"驱动: 轴已处于 {'启用' if enable else '禁用'} 状态 (未改动)")
+
+            return True
+
+        except Exception as e:
+            self.status_label.setText(f"驱动配置写入失败: {e}")
+            return False
+
     # ── 打印位姿 ─────────────────────────────────────────
 
     def print_pose(self):
@@ -266,10 +345,10 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         """返回视口当前相机的人类可读标签"""
         cam_node = viewport.camera()
         if cam_node is not None:
-            lab = cam_node.path()
-            if 'spacemouse_viewport_cam' in lab:
-                return f"🔧 {lab} (代理 persp)"
-            return f"🎯 {lab} (节点)"
+            name = cam_node.path()
+            if 'spacemouse_viewport_cam' in name:
+                return f"🔧 {name} (persp代理)"
+            return f"🎯 {name} (节点)"
         else:
             return "🔄 No Cam (persp)"
 
@@ -319,20 +398,23 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
     def move_viewport_camera(self, tx, ty, tz, rx, ry, rz):
         """第一人称视口相机控制
 
-        统一路径: 都通过相机节点的 worldTransform 原子写回
-          - 视口有相机节点 → 直接用
-          - 视口 No Cam    → 创建隐藏节点, saveViewToCamera 捕获当前视角,
-                            setCamera 切换到它, 之后统一走 Path A
+        统一路径: 全部走相机节点 setWorldTransform() 原子写回
 
-        原子写入 = 单帧一次 setWorldTransform = 无中间态闪屏
+        GeometryViewportCamera (pivot/translation/rotation) 无法原子更新:
+          setPivot/setTranslation/setRotation 各自触发视口刷新,
+          三元组中间态不一致 → 每帧闪屏.
+          setDefaultCamera() 内部先 reset 到默认 persp → 同样闪屏.
+
+        结论: Houdini Python API 只有 setWorldTransform(node) 支持无闪烁视口更新.
+              因此 No Cam 时用代理相机节点接管, 之后全部走此路径.
         """
         viewport = self._get_viewport()
         if viewport is None:
             return
 
-        # 1. 每帧从 viewTransform() 读当前位姿
+        # 1. 从 viewTransform() 读世界位姿 (权威来源, 不依赖任何节点)
         m = mat4_to_numpy(viewport.viewTransform())
-        pos = m[3, :3].copy()
+        world_pos = m[3, :3].copy()
         rot = m[:3, :3].copy()
 
         # 2. 局部轴
@@ -340,10 +422,10 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         cam_fwd   = rot[2, :]
         world_up  = np.array([0.0, 1.0, 0.0])
 
-        # 3. 第一人称平移
+        # 3. 第一人称平移增量
         world_delta = tx * cam_right + ty * cam_fwd
         world_delta[1] -= tz
-        pos += world_delta
+        world_pos += world_delta
 
         # 4. 第一人称旋转 — Yaw → Pitch → Roll
         if abs(rz) > 1e-10:
@@ -360,26 +442,37 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
 
         rot = orthonormalize(rot)
 
-        # 5. 写回 — 统一走相机节点路径
+        # 5. 获取或创建代理相机节点 (有节点直接用, 无节点创建一个)
+        cam_node = self._get_or_create_proxy_cam(viewport)
+
+        # 6. 单次原子写入 — setWorldTransform 是唯一无闪烁路径
+        cam_node.setWorldTransform(numpy_to_mat4(world_pos, rot))
+
+    def _get_or_create_proxy_cam(self, viewport):
+        """获取视口当前相机; No Cam 时创建透明代理节点并接管视口"""
         cam_node = viewport.camera()
 
-        if cam_node is None:
-            # 首次 No Cam: 创建隐藏相机, 捕获当前视角
-            cam_node = self._ensure_hidden_cam()
-            viewport.saveViewToCamera(cam_node)
-            viewport.setCamera(cam_node)
+        if cam_node is not None:
+            return cam_node  # 已有相机, 直接用
 
-        # 单次原子写入, 无中间态
-        cam_node.setWorldTransform(numpy_to_mat4(pos, rot))
+        # No Cam → 创建或复用代理相机
+        proxy_path = '/obj/spacemouse_viewport_cam'
+        proxy = hou.node(proxy_path)
+        if proxy is None:
+            proxy = hou.node('/obj').createNode('cam', 'spacemouse_viewport_cam')
+            proxy.setGenericFlag(hou.nodeFlag.Display, False)     # 视口不可见
+            proxy.setGenericFlag(hou.nodeFlag.Selectable, False)  # 不可选中
+            # 标记为模板/参考, 使其在层级中低调显示
+            try:
+                proxy.setGenericFlag(hou.nodeFlag.Template, True)
+            except Exception:
+                pass
 
-    def _ensure_hidden_cam(self):
-        """获取或创建隐藏的 SpaceMouse 视口代理相机"""
-        hidden = hou.node('/obj/spacemouse_viewport_cam')
-        if hidden is None:
-            hidden = hou.node('/obj').createNode('cam', 'spacemouse_viewport_cam')
-            hidden.setGenericFlag(hou.nodeFlag.Display, False)
-            hidden.setGenericFlag(hou.nodeFlag.Selectable, False)
-        return hidden
+        # 将当前视口自由视角烤入代理相机 → 无缝接管
+        viewport.saveViewToCamera(proxy)
+        viewport.setCamera(proxy)       # 视口切到代理相机
+
+        return proxy
 
 
 def createInterface():
