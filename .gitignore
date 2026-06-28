@@ -73,3 +73,6 @@ Context.txt
 *.tiff
 *.jpg
 *.jpeg
+
+*.hip
+HoudiniScene/
