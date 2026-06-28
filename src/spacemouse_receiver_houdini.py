@@ -1,17 +1,15 @@
 # spacemouse_receiver.pypanel
 """
-SpaceMouse 接收端 — 第一人称视口相机控制
-==========================================
-适配活动视口: 锁定到相机节点则修改节点, No Cam 则直接操作视口 persp 相机
+SpaceMouse Receiver -- viewport object manipulator
+==================================================
+Device: 3Dconnexion SpaceExplorer (VID:046D PID:C627)
+Axis mapping (SpaceExplorer):
+  Tx: left(-)/right(+)      Rx: Pitch  forward(-)/backward(+)
+  Ty: fwd(-)/back(+)        Ry: Roll   cw(-)/ccw(+)
+  Tz: down(+)/up(-)         Rz: Yaw    cw(-)/ccw(+) (top view)
 
-设备: 3Dconnexion SpaceExplorer (VID:046D PID:C627)
-轴映射:
-  Tx: 左(-)/右(+) → 沿相机 X 侧移      Rx: Pitch 前倾(-)/後仰(+)
-  Ty: 前(-)/後(+) → 沿相机 Z 前後      Ry: Roll  顺时针(-)/逆时针(+)
-  Tz: 下(+)/上(-) → 沿世界 Y 升降      Rz: Yaw   顺时针(-)/逆时针(+)
-
-Houdini 矩阵 (row-major): v_world = v_local * M
-  平移在 Row 3 | Row 0=right Row 1=up Row 2=fwd
+Houdini matrix (row-major): v_world = v_local * M
+  Translate at Row 3 | Row 0=right Row 1=up Row 2=fwd
 """
 import hou
 import re
@@ -24,18 +22,17 @@ from PySide6 import QtCore, QtWidgets
 
 UDP_PORT = 9876
 
-# 3DxWare 驱动配置路径
 DRIVER_CFG = os.path.join(
     os.environ.get('APPDATA', ''),
     r'3Dconnexion\3DxWare\Cfg\SideFX_HoudiniFX.xml')
 
 
-# ═══════════════════════════════════════════════════════════════
-# 矩阵工具
-# ═══════════════════════════════════════════════════════════════
+# ======================================================================
+# Matrix utilities
+# ======================================================================
 
 def mat4_to_numpy(m):
-    """hou.Matrix4 → numpy 4x4 (float64)"""
+    """hou.Matrix4 -> numpy 4x4 (float64)"""
     return np.array([
         [m.at(0, 0), m.at(0, 1), m.at(0, 2), m.at(0, 3)],
         [m.at(1, 0), m.at(1, 1), m.at(1, 2), m.at(1, 3)],
@@ -45,7 +42,7 @@ def mat4_to_numpy(m):
 
 
 def numpy_to_mat4(pos, rot):
-    """pos(3,) + rot(3,3) → hou.Matrix4"""
+    """pos(3,) + rot(3,3) -> hou.Matrix4"""
     m = hou.Matrix4()
     for i in range(3):
         for j in range(3):
@@ -59,7 +56,7 @@ def numpy_to_mat4(pos, rot):
 
 
 def numpy_to_mat3(rot):
-    """numpy 3x3 → hou.Matrix3"""
+    """numpy 3x3 -> hou.Matrix3"""
     m = hou.Matrix3()
     for i in range(3):
         for j in range(3):
@@ -68,7 +65,7 @@ def numpy_to_mat3(rot):
 
 
 def rodrigues(axis, angle_rad):
-    """绕任意轴旋转的 3x3 矩阵 (column-vector convention)"""
+    """Rotation 3x3 about arbitrary axis (column-vector convention)"""
     axis = axis / np.linalg.norm(axis)
     c = np.cos(angle_rad)
     s = np.sin(angle_rad)
@@ -82,7 +79,7 @@ def rodrigues(axis, angle_rad):
 
 
 def orthonormalize(rot):
-    """轻量正交化 — 保留 forward (row2)"""
+    """Light orthogonalization -- preserves forward (row2)"""
     fwd = rot[2, :].copy()
     fwd /= np.linalg.norm(fwd)
     right = rot[0, :].copy()
@@ -97,9 +94,9 @@ def orthonormalize(rot):
     return out
 
 
-# ═══════════════════════════════════════════════════════════════
-# 主面板
-# ═══════════════════════════════════════════════════════════════
+# ======================================================================
+# Main panel
+# ======================================================================
 
 class SpaceMouseReceiver(QtWidgets.QWidget):
     def __init__(self):
@@ -113,17 +110,14 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         self.timer.timeout.connect(self.update_from_spacemouse)
 
         self.active = False
-        self.frame_count = 0
-
         self.init_ui()
 
-    # ── UI ────────────────────────────────────────────────
+    # -- UI -----------------------------------------------------------
 
     def init_ui(self):
         layout = QtWidgets.QVBoxLayout()
 
-        # ── 位姿 / 相机状态 ──
-        self.status_label = QtWidgets.QLabel("等待 SpaceMouse 数据...")
+        self.status_label = QtWidgets.QLabel("Waiting for SpaceMouse data...")
         self.status_label.setWordWrap(True)
         self.status_label.setMinimumHeight(110)
         self.status_label.setStyleSheet(
@@ -132,43 +126,41 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             " border: 1px solid #444; border-radius: 4px; }")
         layout.addWidget(self.status_label)
 
-        # ── 按钮 ──
         btn_row = QtWidgets.QHBoxLayout()
 
-        self.toggle_btn = QtWidgets.QPushButton("▶  启动")
+        self.toggle_btn = QtWidgets.QPushButton("Start")
         self.toggle_btn.clicked.connect(self.toggle)
         self.toggle_btn.setMinimumHeight(30)
         btn_row.addWidget(self.toggle_btn)
 
-        self.detect_btn = QtWidgets.QPushButton("🔍 检测参数")
+        self.detect_btn = QtWidgets.QPushButton("Detect Parms")
         self.detect_btn.clicked.connect(self.print_scoped_parms)
         self.detect_btn.setMinimumHeight(30)
         btn_row.addWidget(self.detect_btn)
 
         layout.addLayout(btn_row)
 
-        # ── 驱动开关 ──
+        # Driver toggle
         drv_row = QtWidgets.QHBoxLayout()
-        drv_row.addWidget(QtWidgets.QLabel("3DxWare 驱动:"))
+        drv_row.addWidget(QtWidgets.QLabel("3DxWare:"))
 
-        self.driver_btn = QtWidgets.QPushButton("🎥  相机模式")
+        self.driver_btn = QtWidgets.QPushButton("Driver: ON")
         self.driver_btn.clicked.connect(self.toggle_driver)
         self.driver_btn.setMinimumHeight(30)
         self.driver_btn.setToolTip(
-            "切换 3DxWare 驱动的 Houdini 轴开关\n"
-            "相机模式: 驱动控制视口, 我们不动\n"
-            "物体模式: 驱动静音, 我们控制选中物体")
+            "Toggle 3DxWare axis enable/disable for Houdini\n"
+            "ON: driver controls viewport camera\n"
+            "OFF: we control selected objects")
         drv_row.addWidget(self.driver_btn)
 
-        # 初始状态: 驱动开 (相机模式) — 强制写入以确保上次退出时残留的关闭状态被清除
         self.driver_enabled = True
         self._write_driver_enabled(True)
         self._update_driver_btn()
 
         layout.addLayout(drv_row)
 
-        # ── 灵敏度 (T/R 一行) ──
-        sens = QtWidgets.QGroupBox("灵敏度 (raw / 350 × 幅值)")
+        # Sensitivity
+        sens = QtWidgets.QGroupBox("Sensitivity (raw / 350 * gain)")
         sens_row = QtWidgets.QHBoxLayout()
 
         sens_row.addWidget(QtWidgets.QLabel("T:"))
@@ -181,7 +173,7 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
 
         sens_row.addSpacing(12)
 
-        sens_row.addWidget(QtWidgets.QLabel("R°:"))
+        sens_row.addWidget(QtWidgets.QLabel("R deg:"))
         self.r_spin = QtWidgets.QDoubleSpinBox()
         self.r_spin.setRange(0.0001, 10.0)
         self.r_spin.setValue(1.0)
@@ -193,11 +185,11 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         sens.setLayout(sens_row)
         layout.addWidget(sens)
 
-        # ── 逐轴增益 ──
-        gain = QtWidgets.QGroupBox("逐轴增益 (±1.0, 负值=翻转)")
+        # Per-axis gain
+        gain = QtWidgets.QGroupBox("Per-axis gain (+/-1.0, negative=invert)")
         gain_lay = QtWidgets.QGridLayout()
 
-        t_labels = ["Tx (左右)", "Ty (前後)", "Tz (上下)"]
+        t_labels = ["Tx (L/R)", "Ty (F/B)", "Tz (D/U)"]
         r_labels = ["Rx (Pitch)", "Ry (Roll)", "Rz (Yaw)"]
         t_defaults = [1.0, 1.0, 1.0]
         r_defaults = [1.0, 1.0, -1.0]
@@ -234,24 +226,32 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
 
         self.setLayout(layout)
 
-    # ── 启动/停止 ────────────────────────────────────────
+    # -- Start/Stop ---------------------------------------------------
 
     def toggle(self):
         if self.active:
             self.timer.stop()
-            self.toggle_btn.setText("▶  启动")
+            self.toggle_btn.setText("Start")
             self.active = False
-            self.status_label.setText("已停止")
+            self.status_label.setText("Stopped")
         else:
+            self._drain_udp()  # discard stale packets
             self.timer.start(4)
-            self.toggle_btn.setText("⏸  停止")
+            self.toggle_btn.setText("Stop")
             self.active = True
-            self.status_label.setText("已启动，等待数据...")
+            self.status_label.setText("Running, waiting for data...")
 
-    # ── 驱动开关 ─────────────────────────────────────────
+    def _drain_udp(self):
+        """Discard all buffered UDP packets before starting"""
+        try:
+            while True:
+                self.sock.recvfrom(1024)
+        except BlockingIOError:
+            pass
+
+    # -- Driver toggle ------------------------------------------------
 
     def toggle_driver(self):
-        """切换 3DxWare 驱动的 Houdini 轴启用/禁用"""
         new_state = not self.driver_enabled
         if self._write_driver_enabled(new_state):
             self.driver_enabled = new_state
@@ -259,19 +259,19 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
 
     def _update_driver_btn(self):
         if self.driver_enabled:
-            self.driver_btn.setText("🎥  相机模式 (驱动开)")
+            self.driver_btn.setText("Driver: ON (Camera)")
             self.driver_btn.setStyleSheet(
                 "QPushButton { background: #2a622a; color: #fff; }")
         else:
-            self.driver_btn.setText("🧰  物体模式 (驱动关)")
+            self.driver_btn.setText("Driver: OFF (Object)")
             self.driver_btn.setStyleSheet(
                 "QPushButton { background: #6a4a1a; color: #fff; }")
 
     def _write_driver_enabled(self, enable):
-        """修改 SideFX_HoudiniFX.xml 中所有轴的 <Enabled> 值, 保存后驱动实时加载"""
+        """Edit SideFX_HoudiniFX.xml <Enabled> values, driver reloads live"""
         try:
             if not os.path.exists(DRIVER_CFG):
-                self.status_label.setText(f"找不到驱动配置:\n{DRIVER_CFG}")
+                self.status_label.setText(f"Config not found:\n{DRIVER_CFG}")
                 return False
 
             tree = ET.parse(DRIVER_CFG)
@@ -289,22 +289,23 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             if changed > 0:
                 tree.write(DRIVER_CFG, encoding='UTF-8', xml_declaration=True)
                 self.status_label.setText(
-                    f"驱动: {'启用' if enable else '禁用'} {changed} 个轴 → 已写入\n"
-                    f"3DxWare 实时监控 XML, 约 1 秒内生效")
+                    f"Driver: {'enabled' if enable else 'disabled'} "
+                    f"{changed} axes -> written\n"
+                    f"3DxWare watches XML, takes effect ~1 sec")
             else:
                 self.status_label.setText(
-                    f"驱动: 轴已处于 {'启用' if enable else '禁用'} 状态 (未改动)")
+                    f"Driver: axes already {'enabled' if enable else 'disabled'}")
 
             return True
 
         except Exception as e:
-            self.status_label.setText(f"驱动配置写入失败: {e}")
+            self.status_label.setText(f"Driver config write failed: {e}")
             return False
 
-    # ── 检测参数 ─────────────────────────────────────────
+    # -- Detect parms -------------------------------------------------
 
     def print_scoped_parms(self):
-        """诊断: 只测 APEX state 路径"""
+        """Print current scoped / active transform parameters"""
         info = ""
         try:
             import apex
@@ -317,13 +318,13 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             info += f"state: {'OK' if state else 'None'}\n"
 
             if state:
-                # dump state 的全部属性
                 info += "state attrs:\n"
                 for attr in dir(state):
                     if not attr.startswith('_'):
                         try:
                             val = getattr(state, attr)
-                            if callable(val): continue
+                            if callable(val):
+                                continue
                             s = str(val)[:80]
                             info += f"  .{attr} = {s}\n"
                         except Exception:
@@ -349,17 +350,16 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
                             info += f"  .r = {cpm.r}\n"
                             if cpm.t:
                                 info += f"  graph_parms[{cpm.t}] = {rig.graph_parms.get(cpm.t)}\n"
-        except Exception as ex:
+        except Exception:
             import traceback
             info += f"\nERROR:\n{traceback.format_exc()}"
 
         print(info)
         self.status_label.setText(info)
 
-    # ── 视口辅助 ─────────────────────────────────────────
+    # -- Viewport helpers ---------------------------------------------
 
     def _get_viewport(self):
-        """获取当前活动 SceneViewer 的 curViewport, 失败返回 None"""
         try:
             desktop = hou.ui.curDesktop()
             viewer = desktop.paneTabOfType(hou.paneTabType.SceneViewer)
@@ -370,17 +370,12 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             return None
 
     def _camera_label(self, viewport):
-        """返回视口当前相机的人类可读标签"""
         cam_node = viewport.camera()
         if cam_node is not None:
-            name = cam_node.path()
-            if 'spacemouse_viewport_cam' in name:
-                return f"🔧 {name} (persp代理)"
-            return f"🎯 {name} (节点)"
-        else:
-            return "🔄 No Cam (persp)"
+            return f"[Cam] {cam_node.path()}"
+        return "[No Cam]"
 
-    # ── UDP 接收 + 移动 ──────────────────────────────────
+    # -- UDP receive + move -------------------------------------------
 
     def update_from_spacemouse(self):
         try:
@@ -399,16 +394,20 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             tv = np.array([tx, ty, tz], dtype=np.float64) / 350.0 * t_sens * gt
             rv = np.array([rx, ry, rz], dtype=np.float64) / 350.0 * r_sens * gr
 
+            # Axis mapping: SpaceMouse -> Houdini (Y-up, Z-fwd)
+            #   Tx(L-/R+) -> -X    (inverted)
+            #   Ty(F-/B+) -> -Z
+            #   Tz(D+/U-) -> -Y
+            hx, hy, hz = -tv[0], -tv[2], -tv[1]
+
+            # Rotation: Pitch->-X  Roll->-Z  Yaw->Y
+            hrx, hry, hrz = -rv[0], rv[2], -rv[1]
+
             if not self.driver_enabled:
-                # 驱动关 → 物体模式: Channel List > OBJ > SOP
                 target = self._get_movable_target()
                 if target is not None:
-                    self._move_target(target, tv[0], tv[1], tv[2],
-                                      rv[0], rv[1], rv[2])
-                # 无可移动目标 → 不动
-            else:
-                # 驱动开 → 官方驱动管相机, 我们只显示
-                pass
+                    self._move_target(target, hx, hy, hz, hrx, hry, hrz)
+            # else: driver on -> official driver handles camera
 
             self._update_display(tx, ty, tz, rx, ry, rz, tv, rv)
 
@@ -417,20 +416,20 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         except Exception:
             import traceback
             traceback.print_exc()
-            self.status_label.setText("错误: 见控制台")
+            self.status_label.setText("Error: see console")
 
     def _update_display(self, tx, ty, tz, rx, ry, rz, tv, rv):
         viewport = self._get_viewport()
         cam_label = self._camera_label(viewport) if viewport else "???"
-        mode = "🧰物体" if not self.driver_enabled else "🎥相机"
+        mode = "[Object]" if not self.driver_enabled else "[Camera]"
 
+        hx, hy, hz = -tv[0], -tv[2], -tv[1]
         info = (
             f"{mode} | {cam_label}\n"
-            f"in  T:({tx:+4d},{ty:+4d},{tz:+4d})  R:({rx:+4d},{ry:+4d},{rz:+4d})\n"
-            f"out T:({tv[0]:+.5f},{tv[1]:+.5f},{tv[2]:+.5f})  "
-            f"R:({rv[0]:+.4f}°,{rv[1]:+.4f}°,{rv[2]:+.4f}°)")
+            f"raw T:({tx:+4d},{ty:+4d},{tz:+4d})  R:({rx:+4d},{ry:+4d},{rz:+4d})\n"
+            f"Hou  X:{hx:+.5f} Y:{hy:+.5f} Z:{hz:+.5f}  "
+            f"R:({rv[0]:+.4f},{rv[1]:+.4f},{rv[2]:+.4f})")
 
-        # 显示 scoped 参数数
         try:
             sel = hou.selectedNodes()
             if sel:
@@ -442,10 +441,9 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
 
         self.status_label.setText(info)
 
-    # ── 物体操控 ──────────────────────────────────────────
+    # -- Object manipulation ------------------------------------------
 
     def _get_apex_state(self):
-        """获取 APEX animate state (失败返回 None)"""
         try:
             import apex
             sv = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
@@ -460,28 +458,33 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
     _last_target_kind = None
 
     def _get_movable_target(self):
-        """获取可移动目标 — 优先从选中节点 scoped parms, 其次 APEX state, 最后 OBJ"""
-        # 1. 选中节点 + isScoped (不依赖 hou.playbar.channelList!)
+        # 1. Selected node + isScoped (no hou.playbar.channelList!)
         try:
             sel = hou.selectedNodes()
             if sel:
                 node = sel[0]
 
-                # OBJ 层级优先
+                # OBJ level
                 if hasattr(node, 'worldTransform') and \
                         callable(getattr(node, 'worldTransform', None)):
                     self._log_target('obj', node.name())
                     return ('obj', node)
 
-                # SOP 层级: 检查是否有 scoped 的变换参数
+                # SOP: scoped transform parms
                 scoped = [p for p in node.parms() if p.isScoped()]
                 if scoped:
                     self._log_target('ch', f'{len(scoped)} scoped on {node.name()}')
                     return ('ch', scoped)
+
+                # LOP / any: direct t/r parm tuples
+                t_tuple = node.parmTuple('t')
+                if t_tuple is not None and len(t_tuple) >= 3:
+                    self._log_target('parm', f't/r on {node.name()}')
+                    return ('parm', node)
         except Exception:
             pass
 
-        # 2. APEX state — 用 control_selection (非 control_paths!)
+        # 2. APEX state -- use control_selection (not control_paths!)
         try:
             state = self._get_apex_state()
             if state is not None:
@@ -497,20 +500,21 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
 
     def _log_target(self, kind, detail):
         if self._last_target_kind != kind:
-            print(f"[SpaceMouse] 目标: [{kind}] {detail}")
+            print(f"[SpaceMouse] target: [{kind}] {detail}")
             self._last_target_kind = kind
 
     def _move_target(self, target, tx, ty, tz, rx, ry, rz):
-        """分发到对应处理器"""
         kind = target[0]
         if kind == 'ch':
             self._move_ch_parms(target[1], tx, ty, tz, rx, ry, rz)
+        elif kind == 'parm':
+            self._move_parm_node(target[1], tx, ty, tz, rx, ry, rz)
         elif kind == 'apex':
             self._move_apex_controls(target[1], tx, ty, tz, rx, ry, rz)
         elif kind == 'obj':
             self._move_obj_node(target[1], tx, ty, tz, rx, ry, rz)
 
-    # 匹配 Rig Pose 't0x' / Transform SOP 'tx' 等格式
+    # Regex patterns for t{n}x / r{n}x (Rig Pose + Transform SOP)
     _RE_TX = re.compile(r'(?:^|[_:])t\d*x$')
     _RE_TY = re.compile(r'(?:^|[_:])t\d*y$')
     _RE_TZ = re.compile(r'(?:^|[_:])t\d*z$')
@@ -518,10 +522,10 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
     _RE_RY = re.compile(r'(?:^|[_:])r\d*y$')
     _RE_RZ = re.compile(r'(?:^|[_:])r\d*z$')
 
-    _ch_printed = False  # 只打印一次匹配结果
+    _ch_printed = False
 
     def _move_ch_parms(self, parms, tx, ty, tz, rx, ry, rz):
-        """Channel List scoped 参数 — 正则匹配 t{n}x / r{n}x 等格式"""
+        """Channel List scoped parms -- regex match t{n}x/r{n}x format"""
         t_map = [None, None, None]
         r_map = [None, None, None]
 
@@ -541,7 +545,7 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             rx_name = r_map[0].name() if r_map[0] else '-'
             ry_name = r_map[1].name() if r_map[1] else '-'
             rz_name = r_map[2].name() if r_map[2] else '-'
-            print(f"[SpaceMouse] T matched: {tx_name} {ty_name} {tz_name} | R matched: {rx_name} {ry_name} {rz_name}")
+            print(f"[SpaceMouse] T:{tx_name} {ty_name} {tz_name} | R:{rx_name} {ry_name} {rz_name}")
             SpaceMouseReceiver._ch_printed = True
 
         if all(t_map):
@@ -556,7 +560,7 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
     _apex_printed = False
 
     def _move_apex_controls(self, target, tx, ty, tz, rx, ry, rz):
-        """APEX animate state — 用 state.control_manager + graph_parms"""
+        """APEX animate state -- via graph_parms"""
         state, ctrl_paths = target
         if not ctrl_paths:
             return
@@ -601,24 +605,40 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             import traceback
             traceback.print_exc()
 
+    def _move_parm_node(self, node, tx, ty, tz, rx, ry, rz):
+        """LOP/SOP with t/r parm tuples -- direct write"""
+        t_tuple = node.parmTuple('t')
+        if t_tuple and len(t_tuple) >= 3:
+            vals = t_tuple.eval()
+            t_tuple.set((vals[0] + tx, vals[1] + ty, vals[2] + tz))
+        r_tuple = node.parmTuple('r')
+        if r_tuple and len(r_tuple) >= 3:
+            vals = r_tuple.eval()
+            nrx, nry, nrz = vals[0], vals[1], vals[2]
+            if abs(rx) > 1e-10: nrx += rx
+            if abs(ry) > 1e-10: nry += ry
+            if abs(rz) > 1e-10: nrz += rz
+            r_tuple.set((nrx, nry, nrz))
+
     def _move_obj_node(self, node, tx, ty, tz, rx, ry, rz):
-        """OBJ 节点 — setWorldTransform"""
+        """OBJ node -- setWorldTransform"""
         obj_mat = mat4_to_numpy(node.worldTransform())
         obj_pos = obj_mat[3, :3].copy()
         obj_rot = obj_mat[:3, :3].copy()
 
-        obj_pos += tx * obj_rot[0, :] + ty * obj_rot[2, :] + tz * obj_rot[1, :]
+        # Houdini axes: X=right(row0), Y=up(row1), Z=fwd(row2)
+        obj_pos += tx * obj_rot[0, :] + ty * obj_rot[1, :] + tz * obj_rot[2, :]
 
-        if abs(rz) > 1e-10:
-            obj_rot = obj_rot @ rodrigues(np.array([0., 1., 0.]), np.radians(rz)).T
+        # Rotation: rx=X(pitch), ry=Y(yaw), rz=Z(roll)
+        if abs(ry) > 1e-10:
+            obj_rot = obj_rot @ rodrigues(np.array([0., 1., 0.]), np.radians(ry)).T
         if abs(rx) > 1e-10:
             obj_rot = obj_rot @ rodrigues(np.array([1., 0., 0.]), np.radians(rx)).T
-        if abs(ry) > 1e-10:
-            obj_rot = obj_rot @ rodrigues(np.array([0., 0., 1.]), np.radians(ry)).T
+        if abs(rz) > 1e-10:
+            obj_rot = obj_rot @ rodrigues(np.array([0., 0., 1.]), np.radians(rz)).T
 
         obj_rot = orthonormalize(obj_rot)
         node.setWorldTransform(numpy_to_mat4(obj_pos, obj_rot))
-
 
 
 def createInterface():
