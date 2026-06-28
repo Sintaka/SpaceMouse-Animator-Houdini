@@ -1,22 +1,6 @@
-3Dconnexion SpaceExplorer
+3Dconnexion Space Mouse SpaceExplorer (EOL)
 HID\VID_046D&PID_C627&REV_0420
 HID\VID_046D&PID_C627
 HID\VID_046D&UP:0001_U:0008
 HID_DEVICE_UP:0001_U:0008
 HID_DEVICE
-
-
-部分运行时(spacemouse_read.py):
-D:\code\dev\Houdini\spaceMouse1>C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe d:/code/dev/Houdini/spaceMouse1/src/spacemouse_sender.py
-============================================================
-  SpaceMouse UDP 广播服务（暴力发送模式）
-============================================================
-✓ UDP 广播地址: 127.0.0.1:9876
-✓ 已连接: Space Explorer
-
-正在广播 (每个数据包立刻发送，Ctrl+C 退出)...
-
-[     0] T:(   +0,   +0,   +0) R:(   +0,   +0,   +0) BTN:00000000
-[     1] T:(   +0,   +0,   +0) R:(   +0,   +6,   +0) BTN:00000000
-[     2] T:(   +0,   +0,   +0) R:(   +0,   +6,   +0) BTN:00000000
-[     3] T:(   +0,   +0,   +0) R:(   +0,  +21,   +0) BTN:00000000

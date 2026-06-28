@@ -76,3 +76,5 @@ Context.txt
 
 *.hip
 HoudiniScene/
+
+*.json
