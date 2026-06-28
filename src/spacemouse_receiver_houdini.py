@@ -14,6 +14,7 @@ Houdini 矩阵 (row-major): v_world = v_local * M
   平移在 Row 3 | Row 0=right Row 1=up Row 2=fwd
 """
 import hou
+import re
 import socket
 import json
 import os
@@ -105,13 +106,8 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         super().__init__()
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", UDP_PORT))
         self.sock.setblocking(False)
-        self._sock_ok = True
-        try:
-            self.sock.bind(("127.0.0.1", UDP_PORT))
-        except (OSError, PermissionError):
-            self._sock_ok = False
-            print(f"UDP {UDP_PORT} 被占用, 请切换 Panel 再切回")
 
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_from_spacemouse)
@@ -144,46 +140,32 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         self.toggle_btn.setMinimumHeight(30)
         btn_row.addWidget(self.toggle_btn)
 
-        self.pose_btn = QtWidgets.QPushButton("📷 打印位姿")
-        self.pose_btn.clicked.connect(self.print_pose)
-        self.pose_btn.setMinimumHeight(30)
-        btn_row.addWidget(self.pose_btn)
+        self.detect_btn = QtWidgets.QPushButton("🔍 检测参数")
+        self.detect_btn.clicked.connect(self.print_scoped_parms)
+        self.detect_btn.setMinimumHeight(30)
+        btn_row.addWidget(self.detect_btn)
 
         layout.addLayout(btn_row)
 
-        # ── 状态指示行 ──
-        stat_row = QtWidgets.QHBoxLayout()
+        # ── 驱动开关 ──
+        drv_row = QtWidgets.QHBoxLayout()
+        drv_row.addWidget(QtWidgets.QLabel("3DxWare 驱动:"))
 
-        # 驱动状态
-        stat_row.addWidget(QtWidgets.QLabel("驱动:"))
-        self.driver_status = QtWidgets.QLabel("🎥")
-        self.driver_status.setToolTip("3DxWare 驱动轴状态\n绿色=驱动开(相机) 橙色=驱动关(物体)")
-        stat_row.addWidget(self.driver_status)
-
-        stat_row.addSpacing(12)
-
-        # 可移动状态
-        stat_row.addWidget(QtWidgets.QLabel("物件:"))
-        self.object_status = QtWidgets.QLabel("━")
-        self.object_status.setToolTip("当前选中是否可移动\n🟢=有可移动对象 ✗=无")
-        stat_row.addWidget(self.object_status)
-
-        stat_row.addStretch()
-
-        # 切换按钮
-        self.driver_btn = QtWidgets.QPushButton(" 切到物体模式 ")
+        self.driver_btn = QtWidgets.QPushButton("🎥  相机模式")
         self.driver_btn.clicked.connect(self.toggle_driver)
-        self.driver_btn.setMinimumHeight(26)
-        self.driver_btn.setMinimumWidth(100)
-        self.driver_btn.setToolTip("切换驱动轴开关\n相机模式=官方驱动控视口\n物体模式=驱动静音+选中物体可控")
-        stat_row.addWidget(self.driver_btn)
+        self.driver_btn.setMinimumHeight(30)
+        self.driver_btn.setToolTip(
+            "切换 3DxWare 驱动的 Houdini 轴开关\n"
+            "相机模式: 驱动控制视口, 我们不动\n"
+            "物体模式: 驱动静音, 我们控制选中物体")
+        drv_row.addWidget(self.driver_btn)
 
-        layout.addLayout(stat_row)
-
-        # 初始: 默认相机模式 (驱动开)
+        # 初始状态: 驱动开 (相机模式) — 强制写入以确保上次退出时残留的关闭状态被清除
         self.driver_enabled = True
         self._write_driver_enabled(True)
-        self._update_driver_status()
+        self._update_driver_btn()
+
+        layout.addLayout(drv_row)
 
         # ── 灵敏度 (T/R 一行) ──
         sens = QtWidgets.QGroupBox("灵敏度 (raw / 350 × 幅值)")
@@ -250,10 +232,7 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         gain.setLayout(gain_lay)
         layout.addWidget(gain)
 
-        if not getattr(self, '_sock_ok', True):
-            self.status_label.setText(
-                f"⚠ UDP 端口 {UDP_PORT} 被占用\n"
-                f"请切到另一个 Panel, 再切回来重新加载")
+        self.setLayout(layout)
 
     # ── 启动/停止 ────────────────────────────────────────
 
@@ -276,53 +255,17 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         new_state = not self.driver_enabled
         if self._write_driver_enabled(new_state):
             self.driver_enabled = new_state
-            self._update_driver_status()
+            self._update_driver_btn()
 
-    def _update_driver_status(self):
+    def _update_driver_btn(self):
         if self.driver_enabled:
-            self.driver_status.setText("🎥 相机")
-            self.driver_status.setStyleSheet(
-                "QLabel { color: #5f5; font-weight: bold; }")
-            self.driver_btn.setText(" 切到物体模式 ")
-            self.driver_btn.setStyleSheet("")
-        else:
-            self.driver_status.setText("🧰 物体")
-            self.driver_status.setStyleSheet(
-                "QLabel { color: #fa0; font-weight: bold; }")
-            self.driver_btn.setText(" 切到相机模式 ")
+            self.driver_btn.setText("🎥  相机模式 (驱动开)")
             self.driver_btn.setStyleSheet(
-                "QPushButton { background: #5a5a1a; color: #fff; }")
-
-    def _update_object_status(self):
-        """检测当前选中节点是否可移动"""
-        try:
-            sel = hou.selectedNodes()
-            if not sel:
-                self.object_status.setText("━ 无选中")
-                self.object_status.setStyleSheet("QLabel { color: #888; }")
-                return
-
-            is_movable = self._get_movable_target() is not None
-            node = sel[0]
-            cat = node.type().category()
-            name = node.name()[:14]
-
-            if is_movable:
-                if cat == hou.objNodeTypeCategory():
-                    tag = "OBJ"
-                elif cat == hou.sopNodeTypeCategory():
-                    tag = "SOP"
-                else:
-                    tag = str(cat)[:3]
-                self.object_status.setText(f"🟢 [{tag}] {name}")
-                self.object_status.setStyleSheet(
-                    "QLabel { color: #5f5; font-weight: bold; }")
-            else:
-                self.object_status.setText(f"✗ {name}")
-                self.object_status.setStyleSheet("QLabel { color: #888; }")
-        except Exception:
-            self.object_status.setText("━")
-            self.object_status.setStyleSheet("QLabel { color: #888; }")
+                "QPushButton { background: #2a622a; color: #fff; }")
+        else:
+            self.driver_btn.setText("🧰  物体模式 (驱动关)")
+            self.driver_btn.setStyleSheet(
+                "QPushButton { background: #6a4a1a; color: #fff; }")
 
     def _write_driver_enabled(self, enable):
         """修改 SideFX_HoudiniFX.xml 中所有轴的 <Enabled> 值, 保存后驱动实时加载"""
@@ -358,34 +301,60 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             self.status_label.setText(f"驱动配置写入失败: {e}")
             return False
 
-    # ── 打印位姿 ─────────────────────────────────────────
+    # ── 检测参数 ─────────────────────────────────────────
 
-    def print_pose(self):
-        """打印当前视口相机位姿到控制台"""
+    def print_scoped_parms(self):
+        """诊断: 只测 APEX state 路径"""
+        info = ""
         try:
-            viewport = self._get_viewport()
-            if viewport is None:
-                print("错误: 未找到活动视口")
-                return
+            import apex
+            sv = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
+            info += f"SceneViewer: {'OK' if sv else 'None'}\n"
 
-            m = mat4_to_numpy(viewport.viewTransform())
-            pos = m[3, :3]
-            rot = m[:3, :3]
-            view_dir = -rot[2, :]
+            kwargs = {}
+            sv.runStateCommand('getState', kwargs)
+            state = kwargs.get('state')
+            info += f"state: {'OK' if state else 'None'}\n"
 
-            info = (
-                f"=== 视口相机位姿 ===\n"
-                f"相机   : {self._camera_label(viewport)}\n"
-                f"位置   : ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})\n"
-                f"视野   : ({view_dir[0]:+.4f}, {view_dir[1]:+.4f}, {view_dir[2]:+.4f})\n"
-                f"Right  : ({rot[0,0]:+.4f}, {rot[0,1]:+.4f}, {rot[0,2]:+.4f})\n"
-                f"Up     : ({rot[1,0]:+.4f}, {rot[1,1]:+.4f}, {rot[1,2]:+.4f})"
-            )
-            print(info)
-            self.status_label.setText(info)
+            if state:
+                # dump state 的全部属性
+                info += "state attrs:\n"
+                for attr in dir(state):
+                    if not attr.startswith('_'):
+                        try:
+                            val = getattr(state, attr)
+                            if callable(val): continue
+                            s = str(val)[:80]
+                            info += f"  .{attr} = {s}\n"
+                        except Exception:
+                            pass
 
-        except Exception as e:
-            self.status_label.setText(f"打印错误: {e}")
+                ctrls = getattr(state, 'control_paths', None)
+                info += f"\ncontrol_paths: {ctrls}\n"
+
+                if ctrls:
+                    from apex.control_2 import controlRigPath
+                    scene = state.scene
+                    for cp in ctrls[:3]:
+                        info += f"\n--- {cp} ---\n"
+                        rp = controlRigPath(cp)
+                        info += f"rig_path: {rp}\n"
+                        rig = scene.getData(rp)
+                        info += f"rig: {'OK' if rig else 'None'}\n"
+                        cm = scene.getData(f"{rp}/control_manager")
+                        info += f"ctrl_mgr: {'OK' if cm else 'None'}\n"
+                        if cm and rig:
+                            cpm = cm.getControlMapping(cp)
+                            info += f"  .t = {cpm.t}\n"
+                            info += f"  .r = {cpm.r}\n"
+                            if cpm.t:
+                                info += f"  graph_parms[{cpm.t}] = {rig.graph_parms.get(cpm.t)}\n"
+        except Exception as ex:
+            import traceback
+            info += f"\nERROR:\n{traceback.format_exc()}"
+
+        print(info)
+        self.status_label.setText(info)
 
     # ── 视口辅助 ─────────────────────────────────────────
 
@@ -414,8 +383,6 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
     # ── UDP 接收 + 移动 ──────────────────────────────────
 
     def update_from_spacemouse(self):
-        if not self._sock_ok:
-            return
         try:
             data, addr = self.sock.recvfrom(1024)
             pkt = json.loads(data.decode('utf-8'))
@@ -432,273 +399,226 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             tv = np.array([tx, ty, tz], dtype=np.float64) / 350.0 * t_sens * gt
             rv = np.array([rx, ry, rz], dtype=np.float64) / 350.0 * r_sens * gr
 
-            if self.driver_enabled:
-                # 驱动开 → 官方驱动控制相机, 我们只显示
-                pass
-            else:
-                # 驱动关 → 只移动物体, 绝不碰相机
+            if not self.driver_enabled:
+                # 驱动关 → 物体模式: Channel List > OBJ > SOP
                 target = self._get_movable_target()
                 if target is not None:
-                    self.move_selected_object(target, tv[0], tv[1], tv[2],
-                                              rv[0], rv[1], rv[2])
-                else:
-                    # 无可移动目标
-                    pass
+                    self._move_target(target, tv[0], tv[1], tv[2],
+                                      rv[0], rv[1], rv[2])
+                # 无可移动目标 → 不动
+            else:
+                # 驱动开 → 官方驱动管相机, 我们只显示
+                pass
 
             self._update_display(tx, ty, tz, rx, ry, rz, tv, rv)
-            self._update_object_status()
 
         except BlockingIOError:
             pass
-        except Exception as e:
-            self.status_label.setText(f"错误: {e}")
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            self.status_label.setText("错误: 见控制台")
 
     def _update_display(self, tx, ty, tz, rx, ry, rz, tv, rv):
         viewport = self._get_viewport()
         cam_label = self._camera_label(viewport) if viewport else "???"
+        mode = "🧰物体" if not self.driver_enabled else "🎥相机"
 
-        mode = "🎥相机" if self.driver_enabled else "🧰物体"
-        obj_info = ""
-        if not self.driver_enabled:
-            target = self._get_movable_target()
-            if target is not None:
-                obj_info = f" | {target.name()}"
-                # 如果是 OBJ 节点, 显示世界位置
-                if hasattr(target, 'worldTransform') and \
-                        callable(getattr(target, 'worldTransform', None)):
-                    try:
-                        om = mat4_to_numpy(target.worldTransform())
-                        op = om[3, :3]
-                        obj_info += f" pos({op[0]:.3f},{op[1]:.3f},{op[2]:.3f})"
-                    except Exception:
-                        pass
-            else:
-                obj_info = " | 无可移动物体"
-
-        self.status_label.setText(
-            f"{mode} | {cam_label}{obj_info}\n"
+        info = (
+            f"{mode} | {cam_label}\n"
             f"in  T:({tx:+4d},{ty:+4d},{tz:+4d})  R:({rx:+4d},{ry:+4d},{rz:+4d})\n"
             f"out T:({tv[0]:+.5f},{tv[1]:+.5f},{tv[2]:+.5f})  "
             f"R:({rv[0]:+.4f}°,{rv[1]:+.4f}°,{rv[2]:+.4f}°)")
 
-    # ── 物体操控 ──────────────────────────────────────────
-
-    def _get_movable_target(self):
-        """获取当前视口中可移动的目标节点, 无则返回 None
-
-        已确认兼容:
-          - OBJ 节点 (cam, geo, null, bone 等)
-          - Transform SOP / Edit SOP (有 tx/ty/tz)
-          - Rig Pose (有 group 参数 + transform 子参数)
-          - Bone / Capture 相关
-        """
+        # 显示 scoped 参数数
         try:
             sel = hou.selectedNodes()
-            if not sel:
+            if sel:
+                scoped = [p for p in sel[0].parms() if p.isScoped()]
+                if scoped:
+                    info += f"\nCH: {len(scoped)} scoped parms"
+        except Exception:
+            pass
+
+        self.status_label.setText(info)
+
+    # ── 物体操控 ──────────────────────────────────────────
+
+    def _get_apex_state(self):
+        """获取 APEX animate state (失败返回 None)"""
+        try:
+            import apex
+            sv = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
+            if sv is None:
                 return None
-            node = sel[0]
+            kwargs = {}
+            sv.runStateCommand('getState', kwargs)
+            return kwargs.get('state')
+        except Exception:
+            return None
 
-            # OBJ 层级 — 通用
-            if (hasattr(node, 'worldTransform') and
-                    callable(getattr(node, 'worldTransform', None))):
-                return node
+    _last_target_kind = None
 
-            # SOP 层级 — 任意被选中的 SOP 节点都可能被 Enter 激活 handle
-            cat = node.type().category()
-            if cat in (hou.sopNodeTypeCategory(),):
-                return node  # 接受所有 SOP, _move_sop_node 内部按参数适配
+    def _get_movable_target(self):
+        """获取可移动目标 — 优先从选中节点 scoped parms, 其次 APEX state, 最后 OBJ"""
+        # 1. 选中节点 + isScoped (不依赖 hou.playbar.channelList!)
+        try:
+            sel = hou.selectedNodes()
+            if sel:
+                node = sel[0]
 
+                # OBJ 层级优先
+                if hasattr(node, 'worldTransform') and \
+                        callable(getattr(node, 'worldTransform', None)):
+                    self._log_target('obj', node.name())
+                    return ('obj', node)
+
+                # SOP 层级: 检查是否有 scoped 的变换参数
+                scoped = [p for p in node.parms() if p.isScoped()]
+                if scoped:
+                    self._log_target('ch', f'{len(scoped)} scoped on {node.name()}')
+                    return ('ch', scoped)
         except Exception:
             pass
-        return None
 
-    def _get_node_parent_obj(self, node):
-        """找到节点的父 OBJ 容器 (有 worldTransform 的祖先)"""
+        # 2. APEX state — 用 control_selection (非 control_paths!)
         try:
-            if (hasattr(node, 'worldTransform') and
-                    callable(getattr(node, 'worldTransform', None))):
-                return node
-            parent = node.parent()
-            if parent is not None:
-                return self._get_node_parent_obj(parent)
+            state = self._get_apex_state()
+            if state is not None:
+                ctrls = getattr(state, 'control_selection', None)
+                if ctrls:
+                    self._log_target('apex', f'{len(ctrls)} controls')
+                    return ('apex', (state, list(ctrls)))
         except Exception:
             pass
+
+        self._last_target_kind = None
         return None
 
-    def move_selected_object(self, node, tx, ty, tz, rx, ry, rz):
-        """通用物体操控 — 全部基于物体本地坐标系
+    def _log_target(self, kind, detail):
+        if self._last_target_kind != kind:
+            print(f"[SpaceMouse] 目标: [{kind}] {detail}")
+            self._last_target_kind = kind
 
-        OBJ 层级: 沿 OBJ 自身轴平移, 绕自身轴旋转
-        SOP 层级: 沿父 OBJ 局部轴平移, 绕 SOP 参数轴旋转
-        """
+    def _move_target(self, target, tx, ty, tz, rx, ry, rz):
+        """分发到对应处理器"""
+        kind = target[0]
+        if kind == 'ch':
+            self._move_ch_parms(target[1], tx, ty, tz, rx, ry, rz)
+        elif kind == 'apex':
+            self._move_apex_controls(target[1], tx, ty, tz, rx, ry, rz)
+        elif kind == 'obj':
+            self._move_obj_node(target[1], tx, ty, tz, rx, ry, rz)
+
+    # 匹配 Rig Pose 't0x' / Transform SOP 'tx' 等格式
+    _RE_TX = re.compile(r'(?:^|[_:])t\d*x$')
+    _RE_TY = re.compile(r'(?:^|[_:])t\d*y$')
+    _RE_TZ = re.compile(r'(?:^|[_:])t\d*z$')
+    _RE_RX = re.compile(r'(?:^|[_:])r\d*x$')
+    _RE_RY = re.compile(r'(?:^|[_:])r\d*y$')
+    _RE_RZ = re.compile(r'(?:^|[_:])r\d*z$')
+
+    _ch_printed = False  # 只打印一次匹配结果
+
+    def _move_ch_parms(self, parms, tx, ty, tz, rx, ry, rz):
+        """Channel List scoped 参数 — 正则匹配 t{n}x / r{n}x 等格式"""
+        t_map = [None, None, None]
+        r_map = [None, None, None]
+
+        for p in parms:
+            name = p.name().lower()
+            if SpaceMouseReceiver._RE_TX.search(name): t_map[0] = p
+            elif SpaceMouseReceiver._RE_TY.search(name): t_map[1] = p
+            elif SpaceMouseReceiver._RE_TZ.search(name): t_map[2] = p
+            if SpaceMouseReceiver._RE_RX.search(name): r_map[0] = p
+            elif SpaceMouseReceiver._RE_RY.search(name): r_map[1] = p
+            elif SpaceMouseReceiver._RE_RZ.search(name): r_map[2] = p
+
+        if not SpaceMouseReceiver._ch_printed:
+            tx_name = t_map[0].name() if t_map[0] else '-'
+            ty_name = t_map[1].name() if t_map[1] else '-'
+            tz_name = t_map[2].name() if t_map[2] else '-'
+            rx_name = r_map[0].name() if r_map[0] else '-'
+            ry_name = r_map[1].name() if r_map[1] else '-'
+            rz_name = r_map[2].name() if r_map[2] else '-'
+            print(f"[SpaceMouse] T matched: {tx_name} {ty_name} {tz_name} | R matched: {rx_name} {ry_name} {rz_name}")
+            SpaceMouseReceiver._ch_printed = True
+
+        if all(t_map):
+            t_map[0].set(t_map[0].eval() + tx)
+            t_map[1].set(t_map[1].eval() + ty)
+            t_map[2].set(t_map[2].eval() + tz)
+        if all(r_map):
+            if abs(rx) > 1e-10: r_map[0].set(r_map[0].eval() + rx)
+            if abs(ry) > 1e-10: r_map[1].set(r_map[1].eval() + ry)
+            if abs(rz) > 1e-10: r_map[2].set(r_map[2].eval() + rz)
+
+    _apex_printed = False
+
+    def _move_apex_controls(self, target, tx, ty, tz, rx, ry, rz):
+        """APEX animate state — 用 state.control_manager + graph_parms"""
+        state, ctrl_paths = target
+        if not ctrl_paths:
+            return
+
         try:
-            is_obj = (hasattr(node, 'worldTransform') and
-                      callable(getattr(node, 'worldTransform', None)))
+            from apex.control_2 import controlRigPath
+            ctrl_mgr = state.control_manager
+            scene = state.scene
 
-            if is_obj:
-                self._move_obj_node(node, tx, ty, tz, rx, ry, rz)
-            else:
-                self._move_sop_node(node, tx, ty, tz, rx, ry, rz)
+            for ctrl_path in ctrl_paths:
+                rig_path = controlRigPath(ctrl_path)
+                rig = scene.getData(rig_path)
+                if rig is None:
+                    continue
 
-        except Exception as e:
-            self.status_label.setText(f"物体移动错误: {e}")
+                ctrl_map = ctrl_mgr.getControlMapping(ctrl_path)
+
+                if not SpaceMouseReceiver._apex_printed:
+                    print(f"[SpaceMouse] APEX ctrl={ctrl_path} "
+                          f"t={ctrl_map.t} r={ctrl_map.r}")
+                    SpaceMouseReceiver._apex_printed = True
+
+                if ctrl_map.t:
+                    cur = rig.graph_parms.get(ctrl_map.t)
+                    if cur is None:
+                        cur = hou.Vector3(0, 0, 0)
+                    cur = hou.Vector3(cur) if not isinstance(cur, hou.Vector3) else cur
+                    rig.graph_parms[ctrl_map.t] = hou.Vector3(
+                        cur[0] + tx, cur[1] + ty, cur[2] + tz)
+
+                if ctrl_map.r and (abs(rx) > 1e-10 or abs(ry) > 1e-10 or abs(rz) > 1e-10):
+                    cur = rig.graph_parms.get(ctrl_map.r)
+                    if cur is None:
+                        cur = hou.Vector3(0, 0, 0)
+                    cur = hou.Vector3(cur) if not isinstance(cur, hou.Vector3) else cur
+                    rig.graph_parms[ctrl_map.r] = hou.Vector3(
+                        cur[0] + rx, cur[1] + ry, cur[2] + rz)
+
+            state.runSceneCallbacks()
+
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
     def _move_obj_node(self, node, tx, ty, tz, rx, ry, rz):
-        """OBJ 层级: 沿自身局部轴移动 + 绕自身轴旋转"""
+        """OBJ 节点 — setWorldTransform"""
         obj_mat = mat4_to_numpy(node.worldTransform())
         obj_pos = obj_mat[3, :3].copy()
         obj_rot = obj_mat[:3, :3].copy()
 
-        # 平移 — OBJ 局部轴
-        # Row 0=right, Row 1=up, Row 2=fwd (Houdini row-major)
-        obj_right = obj_rot[0, :]
-        obj_up    = obj_rot[1, :]
-        obj_fwd   = obj_rot[2, :]
-        obj_pos += tx * obj_right + ty * obj_fwd + tz * obj_up
+        obj_pos += tx * obj_rot[0, :] + ty * obj_rot[2, :] + tz * obj_rot[1, :]
 
-        # 旋转 — OBJ 局部轴 (Pitch绕X, Roll绕Z, Yaw绕Y)
-        if abs(rz) > 1e-10:            # Yaw: 绕 OBJ 的 up(Y)
-            R = rodrigues(obj_rot[1, :], np.radians(rz))
-            obj_rot = obj_rot @ R.T
-        if abs(rx) > 1e-10:            # Pitch: 绕 OBJ 的右(X)
-            R = rodrigues(obj_rot[0, :], np.radians(rx))
-            obj_rot = obj_rot @ R.T
-        if abs(ry) > 1e-10:            # Roll: 绕 OBJ 的前(Z)
-            R = rodrigues(obj_rot[2, :], np.radians(ry))
-            obj_rot = obj_rot @ R.T
+        if abs(rz) > 1e-10:
+            obj_rot = obj_rot @ rodrigues(np.array([0., 1., 0.]), np.radians(rz)).T
+        if abs(rx) > 1e-10:
+            obj_rot = obj_rot @ rodrigues(np.array([1., 0., 0.]), np.radians(rx)).T
+        if abs(ry) > 1e-10:
+            obj_rot = obj_rot @ rodrigues(np.array([0., 0., 1.]), np.radians(ry)).T
 
         obj_rot = orthonormalize(obj_rot)
         node.setWorldTransform(numpy_to_mat4(obj_pos, obj_rot))
 
-    def _move_sop_node(self, node, tx, ty, tz, rx, ry, rz):
-        """SOP 层级: 多模式参数适配
-
-        尝试顺序:
-          1. tx/ty/tz (Transform SOP, Edit SOP, Null)
-          2. px/py/pz (某些 bone/rig 节点)
-          3. t[x/y/z] 单参 (通用)
-          4. 直接读 parmTuple('t') (Transform SOP 标准)
-        """
-        moved = False
-
-        # ── 平移 ──
-        # 尝试 parmTuple('t') — 最通用的方式
-        t_tuple = node.parmTuple('t')
-        if t_tuple is not None and len(t_tuple) >= 3:
-            vals = t_tuple.eval()
-            node.parmTuple('t').set((vals[0] + tx, vals[1] + ty, vals[2] + tz))
-            moved = True
-        elif node.parm('tx') is not None:
-            node.parm('tx').set(node.parm('tx').eval() + tx)
-            node.parm('ty').set(node.parm('ty').eval() + ty)
-            node.parm('tz').set(node.parm('tz').eval() + tz)
-            moved = True
-        elif node.parm('px') is not None:
-            node.parm('px').set(node.parm('px').eval() + tx)
-            node.parm('py').set(node.parm('py').eval() + ty)
-            node.parm('pz').set(node.parm('pz').eval() + tz)
-            moved = True
-
-        # ── 旋转 ──
-        r_tuple = node.parmTuple('r')
-        if r_tuple is not None and len(r_tuple) >= 3:
-            r_vals = r_tuple.eval()
-            nrx, nry, nrz = r_vals[0], r_vals[1], r_vals[2]
-            if abs(rx) > 1e-10: nrx += rx
-            if abs(ry) > 1e-10: nry += ry
-            if abs(rz) > 1e-10: nrz += rz
-            node.parmTuple('r').set((nrx, nry, nrz))
-            moved = True
-        elif node.parm('rx') is not None:
-            if abs(rx) > 1e-10: node.parm('rx').set(node.parm('rx').eval() + rx)
-            if abs(ry) > 1e-10: node.parm('ry').set(node.parm('ry').eval() + ry)
-            if abs(rz) > 1e-10: node.parm('rz').set(node.parm('rz').eval() + rz)
-            moved = True
-
-        if not moved:
-            self.status_label.setText(
-                f"SOP 节点 {node.name()} 无可写变换参数")
-
-    # ── 核心: 视口自适应相机控制 ──────────────────────────
-
-    def move_viewport_camera(self, tx, ty, tz, rx, ry, rz):
-        """第一人称视口相机控制
-
-        统一路径: 全部走相机节点 setWorldTransform() 原子写回
-
-        GeometryViewportCamera (pivot/translation/rotation) 无法原子更新:
-          setPivot/setTranslation/setRotation 各自触发视口刷新,
-          三元组中间态不一致 → 每帧闪屏.
-          setDefaultCamera() 内部先 reset 到默认 persp → 同样闪屏.
-
-        结论: Houdini Python API 只有 setWorldTransform(node) 支持无闪烁视口更新.
-              因此 No Cam 时用代理相机节点接管, 之后全部走此路径.
-        """
-        viewport = self._get_viewport()
-        if viewport is None:
-            return
-
-        # 1. 从 viewTransform() 读世界位姿 (权威来源, 不依赖任何节点)
-        m = mat4_to_numpy(viewport.viewTransform())
-        world_pos = m[3, :3].copy()
-        rot = m[:3, :3].copy()
-
-        # 2. 局部轴
-        cam_right = rot[0, :]
-        cam_fwd   = rot[2, :]
-        world_up  = np.array([0.0, 1.0, 0.0])
-
-        # 3. 第一人称平移增量
-        world_delta = tx * cam_right + ty * cam_fwd
-        world_delta[1] -= tz
-        world_pos += world_delta
-
-        # 4. 第一人称旋转 — Yaw → Pitch → Roll
-        if abs(rz) > 1e-10:
-            R = rodrigues(world_up, np.radians(rz))
-            rot = rot @ R.T
-
-        if abs(rx) > 1e-10:
-            R = rodrigues(rot[0, :], np.radians(rx))
-            rot = rot @ R.T
-
-        if abs(ry) > 1e-10:
-            R = rodrigues(rot[2, :], np.radians(ry))
-            rot = rot @ R.T
-
-        rot = orthonormalize(rot)
-
-        # 5. 获取或创建代理相机节点 (有节点直接用, 无节点创建一个)
-        cam_node = self._get_or_create_proxy_cam(viewport)
-
-        # 6. 单次原子写入 — setWorldTransform 是唯一无闪烁路径
-        cam_node.setWorldTransform(numpy_to_mat4(world_pos, rot))
-
-    def _get_or_create_proxy_cam(self, viewport):
-        """获取视口当前相机; No Cam 时创建透明代理节点并接管视口"""
-        cam_node = viewport.camera()
-
-        if cam_node is not None:
-            return cam_node  # 已有相机, 直接用
-
-        # No Cam → 创建或复用代理相机
-        proxy_path = '/obj/spacemouse_viewport_cam'
-        proxy = hou.node(proxy_path)
-        if proxy is None:
-            proxy = hou.node('/obj').createNode('cam', 'spacemouse_viewport_cam')
-            proxy.setGenericFlag(hou.nodeFlag.Display, False)     # 视口不可见
-            proxy.setGenericFlag(hou.nodeFlag.Selectable, False)  # 不可选中
-            # 标记为模板/参考, 使其在层级中低调显示
-            try:
-                proxy.setGenericFlag(hou.nodeFlag.Template, True)
-            except Exception:
-                pass
-
-        # 将当前视口自由视角烤入代理相机 → 无缝接管
-        viewport.saveViewToCamera(proxy)
-        viewport.setCamera(proxy)       # 视口切到代理相机
-
-        return proxy
 
 
 def createInterface():
