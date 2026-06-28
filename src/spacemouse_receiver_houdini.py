@@ -1,20 +1,17 @@
 # spacemouse_receiver.pypanel
 """
-SpaceMouse 接收端 — 第一人称相机控制 /obj/cam1
-==============================================
-使用 numpy 矩阵运算实现真正的局部空间移动+旋转
+SpaceMouse 接收端 — 第一人称视口相机控制
+==========================================
+适配活动视口: 锁定到相机节点则修改节点, No Cam 则直接操作视口 persp 相机
 
 设备: 3Dconnexion SpaceExplorer (VID:046D PID:C627)
-轴映射 (实测):
-  Tx: 左(-)/右(+) → 沿相机 X 轴侧移      Rx: Pitch 前倾(-)/後仰(+) → 绕相机 X 轴
-  Ty: 前(-)/後(+) → 沿相机 Z 轴前后      Ry: Roll  顺时针(-)/逆时针(+) → 绕相机 Z 轴
-  Tz: 下(+)/上(-) → 沿世界 Y 轴升降      Rz: Yaw   顺时针(-)/逆时针(+) → 绕世界 Y 轴
+轴映射:
+  Tx: 左(-)/右(+) → 沿相机 X 侧移      Rx: Pitch 前倾(-)/後仰(+)
+  Ty: 前(-)/後(+) → 沿相机 Z 前後      Ry: Roll  顺时针(-)/逆时针(+)
+  Tz: 下(+)/上(-) → 沿世界 Y 升降      Rz: Yaw   顺时针(-)/逆时针(+)
 
-Houdini 矩阵约定 (row-major):
-  v_world = v_local * M
-  Row 0 = 相机 right     Row 1 = 相机 up
-  Row 2 = 相机 fwd (+Z)  Row 3 = 世界位置
-  setAt(row, col) / at(row, col)
+Houdini 矩阵 (row-major): v_world = v_local * M
+  平移在 Row 3 | Row 0=right Row 1=up Row 2=fwd
 """
 import hou
 import socket
@@ -23,7 +20,6 @@ import numpy as np
 from PySide6 import QtCore, QtWidgets
 
 UDP_PORT = 9876
-CAM_PATH = '/obj/cam1'
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -31,7 +27,7 @@ CAM_PATH = '/obj/cam1'
 # ═══════════════════════════════════════════════════════════════
 
 def mat4_to_numpy(m):
-    """hou.Matrix4 → numpy 4x4"""
+    """hou.Matrix4 → numpy 4x4 (float64)"""
     return np.array([
         [m.at(0, 0), m.at(0, 1), m.at(0, 2), m.at(0, 3)],
         [m.at(1, 0), m.at(1, 1), m.at(1, 2), m.at(1, 3)],
@@ -41,7 +37,7 @@ def mat4_to_numpy(m):
 
 
 def numpy_to_mat4(pos, rot):
-    """pos(3,) + rot(3,3) → hou.Matrix4 (平移在第4行)"""
+    """pos(3,) + rot(3,3) → hou.Matrix4"""
     m = hou.Matrix4()
     for i in range(3):
         for j in range(3):
@@ -54,8 +50,17 @@ def numpy_to_mat4(pos, rot):
     return m
 
 
+def numpy_to_mat3(rot):
+    """numpy 3x3 → hou.Matrix3"""
+    m = hou.Matrix3()
+    for i in range(3):
+        for j in range(3):
+            m.setAt(i, j, float(rot[i, j]))
+    return m
+
+
 def rodrigues(axis, angle_rad):
-    """绕任意轴旋转的 3x3 矩阵 (column-vector convention → 行向量右乘其转置)"""
+    """绕任意轴旋转的 3x3 矩阵 (column-vector convention)"""
     axis = axis / np.linalg.norm(axis)
     c = np.cos(angle_rad)
     s = np.sin(angle_rad)
@@ -69,7 +74,7 @@ def rodrigues(axis, angle_rad):
 
 
 def orthonormalize(rot):
-    """轻量正交化 — 保留 forward (row2), 重新推导 right 和 up"""
+    """轻量正交化 — 保留 forward (row2)"""
     fwd = rot[2, :].copy()
     fwd /= np.linalg.norm(fwd)
     right = rot[0, :].copy()
@@ -92,12 +97,10 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
 
-        # UDP
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", UDP_PORT))
         self.sock.setblocking(False)
 
-        # 定时器 ~250Hz
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_from_spacemouse)
 
@@ -111,7 +114,7 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
     def init_ui(self):
         layout = QtWidgets.QVBoxLayout()
 
-        # 位姿信息显示
+        # ── 位姿 / 相机状态 ──
         self.status_label = QtWidgets.QLabel("等待 SpaceMouse 数据...")
         self.status_label.setWordWrap(True)
         self.status_label.setMinimumHeight(110)
@@ -121,7 +124,7 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             " border: 1px solid #444; border-radius: 4px; }")
         layout.addWidget(self.status_label)
 
-        # 按钮
+        # ── 按钮 ──
         btn_row = QtWidgets.QHBoxLayout()
 
         self.toggle_btn = QtWidgets.QPushButton("▶  启动")
@@ -134,63 +137,65 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         self.pose_btn.setMinimumHeight(30)
         btn_row.addWidget(self.pose_btn)
 
-        self.reset_btn = QtWidgets.QPushButton("↺ 复位 cam1")
-        self.reset_btn.clicked.connect(self.reset_cam1)
-        self.reset_btn.setMinimumHeight(30)
-        btn_row.addWidget(self.reset_btn)
-
         layout.addLayout(btn_row)
 
-        # 主灵敏度
-        sens = QtWidgets.QGroupBox("主灵敏度 (原始值 / 350 × 幅值)")
-        sens_lay = QtWidgets.QFormLayout()
+        # ── 灵敏度 (T/R 一行) ──
+        sens = QtWidgets.QGroupBox("灵敏度 (raw / 350 × 幅值)")
+        sens_row = QtWidgets.QHBoxLayout()
 
+        sens_row.addWidget(QtWidgets.QLabel("T:"))
         self.t_spin = QtWidgets.QDoubleSpinBox()
         self.t_spin.setRange(0.0001, 10.0)
         self.t_spin.setValue(0.05)
         self.t_spin.setSingleStep(0.005)
         self.t_spin.setDecimals(5)
-        sens_lay.addRow("平移 T:", self.t_spin)
+        sens_row.addWidget(self.t_spin)
 
+        sens_row.addSpacing(12)
+
+        sens_row.addWidget(QtWidgets.QLabel("R°:"))
         self.r_spin = QtWidgets.QDoubleSpinBox()
         self.r_spin.setRange(0.0001, 10.0)
         self.r_spin.setValue(1.0)
         self.r_spin.setSingleStep(0.1)
         self.r_spin.setDecimals(5)
-        sens_lay.addRow("旋转 R (°):", self.r_spin)
+        sens_row.addWidget(self.r_spin)
 
-        sens.setLayout(sens_lay)
+        sens_row.addStretch()
+        sens.setLayout(sens_row)
         layout.addWidget(sens)
 
-        # 逐轴增益 (-1.0 ~ 1.0, 默认 1.0)
-        gain = QtWidgets.QGroupBox("逐轴增益 (±1.0, 负值=翻转方向)")
+        # ── 逐轴增益 ──
+        gain = QtWidgets.QGroupBox("逐轴增益 (±1.0, 负值=翻转)")
         gain_lay = QtWidgets.QGridLayout()
 
-        labels_t = ["Tx (左右)", "Ty (前後)", "Tz (上下)"]
-        labels_r = ["Rx (Pitch)", "Ry (Roll)", "Rz (Yaw)"]
+        t_labels = ["Tx (左右)", "Ty (前後)", "Tz (上下)"]
+        r_labels = ["Rx (Pitch)", "Ry (Roll)", "Rz (Yaw)"]
+        t_defaults = [1.0, 1.0, 1.0]
+        r_defaults = [1.0, 1.0, -1.0]
 
         self.gain_t = []
         self.gain_r = []
 
-        for col, (label, default) in enumerate(zip(labels_t, [1.0, 1.0, 1.0])):
-            lb = QtWidgets.QLabel(label)
+        for col in range(3):
+            lb = QtWidgets.QLabel(t_labels[col])
             lb.setStyleSheet("QLabel { font-size: 9pt; }")
             gain_lay.addWidget(lb, 0, col)
             sp = QtWidgets.QDoubleSpinBox()
             sp.setRange(-1.0, 1.0)
-            sp.setValue(default)
+            sp.setValue(t_defaults[col])
             sp.setSingleStep(0.1)
             sp.setDecimals(3)
             gain_lay.addWidget(sp, 1, col)
             self.gain_t.append(sp)
 
-        for col, (label, default) in enumerate(zip(labels_r, [1.0, 1.0, -1.0])):
-            lb = QtWidgets.QLabel(label)
+        for col in range(3):
+            lb = QtWidgets.QLabel(r_labels[col])
             lb.setStyleSheet("QLabel { font-size: 9pt; }")
             gain_lay.addWidget(lb, 2, col)
             sp = QtWidgets.QDoubleSpinBox()
             sp.setRange(-1.0, 1.0)
-            sp.setValue(default)
+            sp.setValue(r_defaults[col])
             sp.setSingleStep(0.1)
             sp.setDecimals(3)
             gain_lay.addWidget(sp, 3, col)
@@ -198,14 +203,6 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
 
         gain.setLayout(gain_lay)
         layout.addWidget(gain)
-
-        # 说明
-        hint = QtWidgets.QLabel(
-            "第一人称: 平移沿相机局部轴 | "
-            "Yaw 绕世界 Y | Pitch 绕相机 X | Roll 绕相机 Z")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("QLabel { color: #888; font-size: 9pt; padding: 4px; }")
-        layout.addWidget(hint)
 
         self.setLayout(layout)
 
@@ -218,48 +215,63 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             self.active = False
             self.status_label.setText("已停止")
         else:
-            self.timer.start(4)  # 250 Hz
+            self.timer.start(4)
             self.toggle_btn.setText("⏸  停止")
             self.active = True
             self.status_label.setText("已启动，等待数据...")
 
-    # ── 复位 ──────────────────────────────────────────────
-
-    def reset_cam1(self):
-        cam = hou.node(CAM_PATH)
-        if cam is None:
-            self.status_label.setText("错误: " + CAM_PATH + " 不存在")
-            return
-        cam.parmTuple('t').set((0.0, 1.5, 5.0))
-        cam.parmTuple('r').set((0.0, 0.0, 0.0))
-        self.status_label.setText("cam1 已复位 → pos(0, 1.5, 5)  rot(0,0,0)")
-
-    # ── 打印位姿 ──────────────────────────────────────────
+    # ── 打印位姿 ─────────────────────────────────────────
 
     def print_pose(self):
-        cam = hou.node(CAM_PATH)
-        if cam is None:
-            self.status_label.setText("错误: " + CAM_PATH + " 不存在")
-            return
+        """打印当前视口相机位姿到控制台"""
+        try:
+            viewport = self._get_viewport()
+            if viewport is None:
+                print("错误: 未找到活动视口")
+                return
 
-        m = mat4_to_numpy(cam.worldTransform())
-        pos = m[3, :3]
-        rot = m[:3, :3]
-        rx = cam.parm('rx').eval()
-        ry = cam.parm('ry').eval()
-        rz = cam.parm('rz').eval()
-        view_dir = -rot[2, :]
+            m = mat4_to_numpy(viewport.viewTransform())
+            pos = m[3, :3]
+            rot = m[:3, :3]
+            view_dir = -rot[2, :]
 
-        info = (
-            f"=== /obj/cam1 位姿 ===\n"
-            f"位置 : ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})\n"
-            f"旋转 : rx={rx:.4f}° ry={ry:.4f}° rz={rz:.4f}°\n"
-            f"视野 : ({view_dir[0]:+.4f}, {view_dir[1]:+.4f}, {view_dir[2]:+.4f})\n"
-            f"Right: ({rot[0,0]:+.4f}, {rot[0,1]:+.4f}, {rot[0,2]:+.4f})\n"
-            f"Up   : ({rot[1,0]:+.4f}, {rot[1,1]:+.4f}, {rot[1,2]:+.4f})"
-        )
-        print(info)
-        self.status_label.setText(info)
+            info = (
+                f"=== 视口相机位姿 ===\n"
+                f"相机   : {self._camera_label(viewport)}\n"
+                f"位置   : ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})\n"
+                f"视野   : ({view_dir[0]:+.4f}, {view_dir[1]:+.4f}, {view_dir[2]:+.4f})\n"
+                f"Right  : ({rot[0,0]:+.4f}, {rot[0,1]:+.4f}, {rot[0,2]:+.4f})\n"
+                f"Up     : ({rot[1,0]:+.4f}, {rot[1,1]:+.4f}, {rot[1,2]:+.4f})"
+            )
+            print(info)
+            self.status_label.setText(info)
+
+        except Exception as e:
+            self.status_label.setText(f"打印错误: {e}")
+
+    # ── 视口辅助 ─────────────────────────────────────────
+
+    def _get_viewport(self):
+        """获取当前活动 SceneViewer 的 curViewport, 失败返回 None"""
+        try:
+            desktop = hou.ui.curDesktop()
+            viewer = desktop.paneTabOfType(hou.paneTabType.SceneViewer)
+            if viewer is None:
+                return None
+            return viewer.curViewport()
+        except Exception:
+            return None
+
+    def _camera_label(self, viewport):
+        """返回视口当前相机的人类可读标签"""
+        cam_node = viewport.camera()
+        if cam_node is not None:
+            lab = cam_node.path()
+            if 'spacemouse_viewport_cam' in lab:
+                return f"🔧 {lab} (代理 persp)"
+            return f"🎯 {lab} (节点)"
+        else:
+            return "🔄 No Cam (persp)"
 
     # ── UDP 接收 + 移动 ──────────────────────────────────
 
@@ -274,14 +286,13 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             t_sens = self.t_spin.value()
             r_sens = self.r_spin.value()
 
-            # 逐轴增益
             gt = np.array([g.value() for g in self.gain_t], dtype=np.float64)
             gr = np.array([g.value() for g in self.gain_r], dtype=np.float64)
 
             tv = np.array([tx, ty, tz], dtype=np.float64) / 350.0 * t_sens * gt
             rv = np.array([rx, ry, rz], dtype=np.float64) / 350.0 * r_sens * gr
 
-            self.move_cam1(tv[0], tv[1], tv[2], rv[0], rv[1], rv[2])
+            self.move_viewport_camera(tv[0], tv[1], tv[2], rv[0], rv[1], rv[2])
             self._update_display(tx, ty, tz, rx, ry, rz, tv, rv)
 
         except BlockingIOError:
@@ -290,70 +301,85 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             self.status_label.setText(f"错误: {e}")
 
     def _update_display(self, tx, ty, tz, rx, ry, rz, tv, rv):
-        cam = hou.node(CAM_PATH)
-        if cam is None:
-            return
-        p = cam.parmTuple('t').eval()
-        r = cam.parmTuple('r').eval()
+        viewport = self._get_viewport()
+        cam_label = self._camera_label(viewport) if viewport else "???"
+
+        m = mat4_to_numpy(viewport.viewTransform()) if viewport else np.eye(4)
+        pos = m[3, :3]
+
         self.status_label.setText(
+            f"{cam_label}\n"
             f"in  T:({tx:+4d},{ty:+4d},{tz:+4d})  R:({rx:+4d},{ry:+4d},{rz:+4d})\n"
             f"out T:({tv[0]:+.5f},{tv[1]:+.5f},{tv[2]:+.5f})  "
             f"R:({rv[0]:+.4f}°,{rv[1]:+.4f}°,{rv[2]:+.4f}°)\n"
-            f"cam → pos({p[0]:.3f},{p[1]:.3f},{p[2]:.3f})  "
-            f"rot({r[0]:.2f}°,{r[1]:.2f}°,{r[2]:.2f}°)")
+            f"pos ({pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f})")
 
-    # ── 核心: 第一人称相机控制 ───────────────────────────
+    # ── 核心: 视口自适应相机控制 ──────────────────────────
 
-    def move_cam1(self, tx, ty, tz, rx, ry, rz):
-        """第一人称相机控制 — 直接操作 /obj/cam1 世界变换矩阵
+    def move_viewport_camera(self, tx, ty, tz, rx, ry, rz):
+        """第一人称视口相机控制
 
-        SpaceExplorer → 相机动作:
-          tx = 左(-)/右(+)    → 沿相机 X 轴侧移
-          ty = 前(-)/後(+)    → 沿相机 Z 轴前后 (ty+ = 後退)
-          tz = 下(+)/上(-)    → 沿世界 Y 轴升降 (tz+ = 下降)
-          rx = 前倾(-)/後仰(+) → Pitch, 绕相机 X 轴
-          ry = Roll 顺(-)/逆(+) → Roll,  绕相机 Z 轴
-          rz = Yaw  顺(-)/逆(+) → Yaw,   绕世界 Y 轴
+        统一路径: 都通过相机节点的 worldTransform 原子写回
+          - 视口有相机节点 → 直接用
+          - 视口 No Cam    → 创建隐藏节点, saveViewToCamera 捕获当前视角,
+                            setCamera 切换到它, 之后统一走 Path A
+
+        原子写入 = 单帧一次 setWorldTransform = 无中间态闪屏
         """
-        cam = hou.node(CAM_PATH)
-        if cam is None:
+        viewport = self._get_viewport()
+        if viewport is None:
             return
 
-        # 1. 获取当前世界变换
-        m = mat4_to_numpy(cam.worldTransform())
+        # 1. 每帧从 viewTransform() 读当前位姿
+        m = mat4_to_numpy(viewport.viewTransform())
         pos = m[3, :3].copy()
         rot = m[:3, :3].copy()
 
-        # 2. 相机局部轴 (行向量 = 局部轴在世界空间的方向)
-        cam_right  = rot[0, :]     # 局部 X
-        cam_fwd    = rot[2, :]     # 局部 Z
-        world_up   = np.array([0.0, 1.0, 0.0])
+        # 2. 局部轴
+        cam_right = rot[0, :]
+        cam_fwd   = rot[2, :]
+        world_up  = np.array([0.0, 1.0, 0.0])
 
-        # 3. 平移 — 沿相机局部轴
-        pos += tx * cam_right          # 左右
-        pos += ty * cam_fwd            # 前後
-        pos[1] -= tz                   # 上下 (世界 Y)
+        # 3. 第一人称平移
+        world_delta = tx * cam_right + ty * cam_fwd
+        world_delta[1] -= tz
+        pos += world_delta
 
-        # 4. 旋转 — 顺序: Yaw → Pitch → Roll
-        #    对行向量 M:  M_new = M @ rodrigues(axis, angle).T
-
-        if abs(rz) > 1e-10:            # Yaw: 绕世界 Y
+        # 4. 第一人称旋转 — Yaw → Pitch → Roll
+        if abs(rz) > 1e-10:
             R = rodrigues(world_up, np.radians(rz))
             rot = rot @ R.T
 
-        if abs(rx) > 1e-10:            # Pitch: 绕相机 X (right)
+        if abs(rx) > 1e-10:
             R = rodrigues(rot[0, :], np.radians(rx))
             rot = rot @ R.T
 
-        if abs(ry) > 1e-10:            # Roll: 绕相机 Z (forward)
+        if abs(ry) > 1e-10:
             R = rodrigues(rot[2, :], np.radians(ry))
             rot = rot @ R.T
 
-        # 5. 防浮点漂移
         rot = orthonormalize(rot)
 
-        # 6. 写回世界变换
-        cam.setWorldTransform(numpy_to_mat4(pos, rot))
+        # 5. 写回 — 统一走相机节点路径
+        cam_node = viewport.camera()
+
+        if cam_node is None:
+            # 首次 No Cam: 创建隐藏相机, 捕获当前视角
+            cam_node = self._ensure_hidden_cam()
+            viewport.saveViewToCamera(cam_node)
+            viewport.setCamera(cam_node)
+
+        # 单次原子写入, 无中间态
+        cam_node.setWorldTransform(numpy_to_mat4(pos, rot))
+
+    def _ensure_hidden_cam(self):
+        """获取或创建隐藏的 SpaceMouse 视口代理相机"""
+        hidden = hou.node('/obj/spacemouse_viewport_cam')
+        if hidden is None:
+            hidden = hou.node('/obj').createNode('cam', 'spacemouse_viewport_cam')
+            hidden.setGenericFlag(hou.nodeFlag.Display, False)
+            hidden.setGenericFlag(hou.nodeFlag.Selectable, False)
+        return hidden
 
 
 def createInterface():
