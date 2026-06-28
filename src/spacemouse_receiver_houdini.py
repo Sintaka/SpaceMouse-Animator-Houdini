@@ -2,6 +2,9 @@
 """
 SpaceMouse 接收端 - Houdini Python Panel
 直接控制 /obj/cam1
+
+设备: 3Dconnexion SpaceExplorer (VID:046D PID:C627)
+轴映射: Tx=左右 Ty=前後 Tz=上下 | Rx=Pitch Ry=Roll Rz=Yaw
 """
 import hou
 import socket
@@ -88,10 +91,10 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             ry_norm = ry / 350.0 * self.rot_spin.value()
             rz_norm = rz / 350.0 * self.rot_spin.value()
             
-            # 更新状态显示
+            # 更新状态显示 (带轴标签)
             self.status_label.setText(
-                f"T:({tx_norm:+.3f}, {ty_norm:+.3f}, {tz_norm:+.3f}) "
-                f"R:({rx_norm:+.3f}, {ry_norm:+.3f}, {rz_norm:+.3f})"
+                f"Tx:{tx_norm:+.3f} Ty:{ty_norm:+.3f} Tz:{tz_norm:+.3f} | "
+                f"Rx:{rx_norm:+.3f} Ry:{ry_norm:+.3f} Rz:{rz_norm:+.3f}"
             )
             
             # 移动 cam1
@@ -103,35 +106,47 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             self.status_label.setText(f"错误: {e}")
     
     def move_cam1(self, tx, ty, tz, rx, ry, rz):
-        """移动 /obj/cam1"""
+        """移动 /obj/cam1
+        SpaceExplorer 轴映射 (实测):
+          Tx(左右)  → Houdini X
+          Ty(前後)  → Houdini Z  注意: 不是上下!
+          Tz(上下)  → Houdini Y  注意: 不是前後!
+          Rx(Pitch) → Houdini RX
+          Ry(Roll)  → Houdini RZ 注意: 交换!
+          Rz(Yaw)   → Houdini RY 注意: 交换!
+        """
         try:
             cam = hou.node('/obj/cam1')
             if not cam:
                 return
-            
+
             # 获取当前变换
             t_curr = cam.parmTuple('t').eval()
             r_curr = cam.parmTuple('r').eval()
-            
-            # SpaceMouse 坐标映射到 Houdini:
-            # SpaceMouse: X=左右, Y=上下, Z=前后
-            # Houdini: X=左右, Y=上下, Z=前后（但前后是反的）
+
+            # 平移映射:
+            #   Tx → Houdini X (左右), 同向
+            #   Tz → Houdini Y (上下), SpaceMouse +下压 = 向下 = Houdini -Y
+            #   Ty → Houdini Z (前後), SpaceMouse +後推 = 拉近 = Houdini -Z
             t_new = (
-                t_curr[0] + tx,
-                t_curr[1] + ty,
-                t_curr[2] - tz  # Z 轴反向
+                t_curr[0] + tx,       # Tx → X
+                t_curr[1] - tz,       # Tz → Y (翻转: +下压 → -Y)
+                t_curr[2] - ty,       # Ty → Z (翻转: +後推 → -Z)
             )
-            
-            # 旋转映射：RX=pitch, RY=yaw, RZ=roll
+
+            # 旋转映射:
+            #   Rx → Houdini RX (Pitch)
+            #   Rz → Houdini RY (Yaw)  — 交换!
+            #   Ry → Houdini RZ (Roll) — 交换!
             r_new = (
-                r_curr[0] - rx,  # Pitch 反向
-                r_curr[1] + ry,  # Yaw
-                r_curr[2] + rz   # Roll
+                r_curr[0] - rx,       # Rx → RX (Pitch)
+                r_curr[1] + rz,       # Rz → RY (Yaw)
+                r_curr[2] + ry,       # Ry → RZ (Roll)
             )
-            
+
             cam.parmTuple('t').set(t_new)
             cam.parmTuple('r').set(r_new)
-            
+
         except Exception as e:
             pass
 

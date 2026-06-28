@@ -1,6 +1,13 @@
 """
-SpaceMouse UDP 广播服务
-读取 SpaceExplorer 原始数据，实时广播（无限速模式）
+SpaceMouse UDP 广播服务 — SpaceExplorer 专用
+读取 SpaceExplorer (VID:046D PID:C627) 原始 HID 数据，实时广播
+
+轴映射 (SpaceExplorer 实测):
+  translation[0]=Tx: 左(-)/右(+)       rotation[0]=Rx: Pitch 前倾(-)/後仰(+)
+  translation[1]=Ty: 前(-)/後(+)       rotation[1]=Ry: Roll  顺时针(-)/逆时针(+)
+  translation[2]=Tz: 下(+)/上(-)       rotation[2]=Rz: Yaw   顺时针(-)/逆时针(+) (俯视图)
+
+报告速率: ~125 pkt/s (平移/旋转交替), 完整 6DOF ~62.5 Hz
 """
 import hid
 import struct
@@ -62,20 +69,30 @@ class SpaceMouseReader:
                 should_send = False
                 
                 with self.lock:
-                    # Report 1: 平移
+                    # Report 1: 平移 (Tx, Ty, Tz)
+                    #   Tx=左右, Ty=前後, Tz=上下
                     if report_id == 1 and len(data) >= 7:
-                        self.translation[0] = struct.unpack('<h', bytes(data[1:3]))[0]
-                        self.translation[1] = struct.unpack('<h', bytes(data[3:5]))[0]
-                        self.translation[2] = struct.unpack('<h', bytes(data[5:7]))[0]
+                        self.translation[0] = struct.unpack('<h', bytes(data[1:3]))[0]  # Tx
+                        self.translation[1] = struct.unpack('<h', bytes(data[3:5]))[0]  # Ty
+                        self.translation[2] = struct.unpack('<h', bytes(data[5:7]))[0]  # Tz
                         should_send = True
-                        
-                    # Report 2: 旋转（先试试这个）
+
+                    # Report 2: 旋转 (Rx, Ry, Rz)
+                    #   Rx=Pitch, Ry=Roll, Rz=Yaw
                     elif report_id == 2 and len(data) >= 7:
-                        self.rotation[0] = struct.unpack('<h', bytes(data[1:3]))[0]
-                        self.rotation[1] = struct.unpack('<h', bytes(data[3:5]))[0]
-                        self.rotation[2] = struct.unpack('<h', bytes(data[5:7]))[0]
+                        self.rotation[0] = struct.unpack('<h', bytes(data[1:3]))[0]  # Rx
+                        self.rotation[1] = struct.unpack('<h', bytes(data[3:5]))[0]  # Ry
+                        self.rotation[2] = struct.unpack('<h', bytes(data[5:7]))[0]  # Rz
                         should_send = True
-                    
+
+                    # Report 3: 按钮状态
+                    elif report_id == 3 and len(data) >= 4:
+                        # 按钮位掩码 — 低字节在前
+                        self.button_state = (data[1] |
+                                            (data[2] << 8) |
+                                            (data[3] << 16))
+                        should_send = True
+
                     # 立刻发送并打印
                     if should_send:
                         packet = {
@@ -87,11 +104,13 @@ class SpaceMouseReader:
                         }
                         self.broadcaster.send(packet)
                         
-                        # 每次发送都打印
+                        # 每次发送都打印 (带轴标签)
                         tx, ty, tz = self.translation
                         rx, ry, rz = self.rotation
-                        print(f"[{self.frame_count:6d}] T:({tx:+5d},{ty:+5d},{tz:+5d}) "
-                              f"R:({rx:+5d},{ry:+5d},{rz:+5d}) BTN:{self.button_state:08X}")
+                        print(f"[{self.frame_count:6d}] "
+                              f"Tx:{tx:+5d} Ty:{ty:+5d} Tz:{tz:+5d} | "
+                              f"Rx:{rx:+5d} Ry:{ry:+5d} Rz:{rz:+5d} | "
+                              f"BTN:{self.button_state:08X}")
                         
                         self.frame_count += 1
             
