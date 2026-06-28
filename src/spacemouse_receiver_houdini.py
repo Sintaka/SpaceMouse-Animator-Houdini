@@ -67,7 +67,7 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             self.toggle_btn.setText("启动")
             self.active = False
         else:
-            self.timer.start(8)  # ~60 FPS
+            self.timer.start(4)  # ~60 FPS
             self.toggle_btn.setText("停止")
             self.active = True
     

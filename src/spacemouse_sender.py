@@ -62,23 +62,18 @@ class SpaceMouseReader:
                 should_send = False
                 
                 with self.lock:
-                    # Report 2: 平移
-                    if report_id == 2 and len(data) >= 7:
+                    # Report 1: 平移
+                    if report_id == 1 and len(data) >= 7:
                         self.translation[0] = struct.unpack('<h', bytes(data[1:3]))[0]
                         self.translation[1] = struct.unpack('<h', bytes(data[3:5]))[0]
                         self.translation[2] = struct.unpack('<h', bytes(data[5:7]))[0]
                         should_send = True
-                    
-                    # Report 3: 旋转
-                    elif report_id == 3 and len(data) >= 7:
+                        
+                    # Report 2: 旋转（先试试这个）
+                    elif report_id == 2 and len(data) >= 7:
                         self.rotation[0] = struct.unpack('<h', bytes(data[1:3]))[0]
                         self.rotation[1] = struct.unpack('<h', bytes(data[3:5]))[0]
                         self.rotation[2] = struct.unpack('<h', bytes(data[5:7]))[0]
-                        should_send = True
-                    
-                    # Report 1: 按钮
-                    elif report_id == 1 and len(data) >= 5:
-                        self.button_state = struct.unpack('<I', bytes(data[1:5]))[0]
                         should_send = True
                     
                     # 立刻发送并打印
