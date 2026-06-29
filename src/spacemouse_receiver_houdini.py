@@ -143,7 +143,16 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         self.timer.timeout.connect(self.update_from_spacemouse)
 
         self.active = False
+        self.destroyed.connect(self._cleanup)
         self.init_ui()
+
+    def _cleanup(self):
+        """Release socket on panel close"""
+        try:
+            if hasattr(self, 'sock') and self.sock:
+                self.sock.close()
+        except Exception:
+            pass
 
     # -- UI -----------------------------------------------------------
 
@@ -178,10 +187,10 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         drv_row.addWidget(self.driver_btn)
 
         # Camera-space toggle
-        self.space_btn = QtWidgets.QPushButton("Cam")
+        self.space_btn = QtWidgets.QPushButton("Cam Space")
         self.space_btn.clicked.connect(self.toggle_space_mode)
         self.space_btn.setMinimumHeight(30)
-        self.space_btn.setMinimumWidth(48)
+        self.space_btn.setMinimumWidth(72)
         self.space_btn.setStyleSheet("QPushButton { background: #2a4a6a; color: #fff; }")
         self.space_btn.setToolTip("Toggle movement space\nCam = camera-relative\nAbs = world absolute")
         drv_row.addWidget(self.space_btn)
@@ -192,52 +201,86 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         self._update_driver_btn()
         layout.addLayout(drv_row)
 
-        sens = QtWidgets.QGroupBox("Sensitivity (raw / 350 * gain)")
-        sens_row = QtWidgets.QHBoxLayout()
-        sens_row.addWidget(QtWidgets.QLabel("T:"))
-        self.t_spin = QtWidgets.QDoubleSpinBox()
-        self.t_spin.setRange(0.0001, 10.0)
-        self.t_spin.setValue(0.05)
-        self.t_spin.setSingleStep(0.005)
-        self.t_spin.setDecimals(5)
-        sens_row.addWidget(self.t_spin)
-        sens_row.addSpacing(12)
-        sens_row.addWidget(QtWidgets.QLabel("R deg:"))
-        self.r_spin = QtWidgets.QDoubleSpinBox()
-        self.r_spin.setRange(0.0001, 10.0)
-        self.r_spin.setValue(1.0)
-        self.r_spin.setSingleStep(0.1)
-        self.r_spin.setDecimals(5)
-        sens_row.addWidget(self.r_spin)
-        sens_row.addStretch()
-        sens.setLayout(sens_row)
-        layout.addWidget(sens)
+        # Channel toggle buttons + T/R master + All/None, right-aligned
+        ch_row = QtWidgets.QHBoxLayout()
+        ch_row.addStretch()
+        ch_labels = ['Tx', 'Ty', 'Tz', 'Rx', 'Ry', 'Rz']
+        ch_colors = ['#c44', '#4c4', '#44c', '#c44', '#4c4', '#44c']
+        self.ch_btns = []
+        self.ch_active = [True] * 6
+        self.ch_solo = None
+        self.ch_prev = [True] * 6
+        for i in range(6):
+            btn = QtWidgets.QPushButton(ch_labels[i])
+            btn.setMinimumHeight(22)
+            btn.setMinimumWidth(40)
+            btn.setMaximumWidth(46)
+            btn.setStyleSheet(f"QPushButton {{ background: {ch_colors[i]}; color: #fff; font-size: 9pt; padding: 1px 4px; }}")
+            btn.setToolTip(f"{ch_labels[i]}\nClick: toggle on/off\nAlt+Click: solo/unsolo")
+            btn.clicked.connect(lambda _=None, idx=i: self._on_ch_toggle(idx))
+            self.ch_btns.append(btn)
+            ch_row.addWidget(btn)
+        ch_row.addSpacing(4)
+        # T / R master toggles
+        self.t_master_btn = QtWidgets.QPushButton("T")
+        self.t_master_btn.setMinimumHeight(22); self.t_master_btn.setMaximumWidth(28)
+        self.t_master_btn.clicked.connect(lambda: self._ch_toggle_group(0))
+        ch_row.addWidget(self.t_master_btn)
+        self.r_master_btn = QtWidgets.QPushButton("R")
+        self.r_master_btn.setMinimumHeight(22); self.r_master_btn.setMaximumWidth(28)
+        self.r_master_btn.clicked.connect(lambda: self._ch_toggle_group(3))
+        ch_row.addWidget(self.r_master_btn)
+        # All / None
+        for label, cb in [('All', lambda: self._ch_set_all(True)),
+                           ('None', lambda: self._ch_set_all(False))]:
+            btn = QtWidgets.QPushButton(label)
+            btn.setMinimumHeight(22); btn.setMaximumWidth(40)
+            btn.setStyleSheet("QPushButton { background: #555; color: #ccc; font-size: 9pt; padding: 1px 4px; }")
+            btn.clicked.connect(lambda _=None, f=cb: f())
+            ch_row.addWidget(btn)
+        self._update_ch_buttons()
+        layout.addLayout(ch_row)
 
-        gain = QtWidgets.QGroupBox("Per-axis gain (+/-1.0, negative=invert)")
-        gain_lay = QtWidgets.QGridLayout()
-        t_labels = ["Tx (L/R)", "Ty (F/B)", "Tz (D/U)"]
-        r_labels = ["Rx (Pitch)", "Ry (Roll)", "Rz (Yaw)"]
-        t_defaults = [1.0, 1.0, 1.0]
-        r_defaults = [1.0, 1.0, -1.0]
+        # Sensitivity + Per-axis gain (compact)
+        sens = QtWidgets.QGroupBox("Sensitivity (raw/350 * gain)")
+        sens_grid = QtWidgets.QGridLayout()
+
+        sens_grid.addWidget(QtWidgets.QLabel("T:"), 0, 0)
+        self.t_spin = QtWidgets.QDoubleSpinBox()
+        self.t_spin.setRange(0.0001, 10.0); self.t_spin.setValue(0.05)
+        self.t_spin.setSingleStep(0.005); self.t_spin.setDecimals(5)
+        sens_grid.addWidget(self.t_spin, 0, 1)
+
+        sens_grid.addWidget(QtWidgets.QLabel("R:"), 0, 2)
+        self.r_spin = QtWidgets.QDoubleSpinBox()
+        self.r_spin.setRange(0.0001, 10.0); self.r_spin.setValue(1.0)
+        self.r_spin.setSingleStep(0.1); self.r_spin.setDecimals(5)
+        sens_grid.addWidget(self.r_spin, 0, 3)
+
+        t_labels = ["Tx", "Ty", "Tz"];  t_defaults = [1., 1., 1.]
+        r_labels = ["Rx", "Ry", "Rz"];  r_defaults = [1., 1., -1.]
         self.gain_t, self.gain_r = [], []
         for col in range(3):
             lb = QtWidgets.QLabel(t_labels[col])
-            lb.setStyleSheet("QLabel { font-size: 9pt; }")
-            gain_lay.addWidget(lb, 0, col)
+            lb.setStyleSheet("QLabel { font-size: 8pt; }")
+            sens_grid.addWidget(lb, 1, col)
             sp = QtWidgets.QDoubleSpinBox()
             sp.setRange(-1.0, 1.0); sp.setValue(t_defaults[col])
-            sp.setSingleStep(0.1); sp.setDecimals(3)
-            gain_lay.addWidget(sp, 1, col); self.gain_t.append(sp)
+            sp.setSingleStep(0.1); sp.setDecimals(2)
+            sp.setMaximumWidth(60)
+            sens_grid.addWidget(sp, 2, col); self.gain_t.append(sp)
         for col in range(3):
             lb = QtWidgets.QLabel(r_labels[col])
-            lb.setStyleSheet("QLabel { font-size: 9pt; }")
-            gain_lay.addWidget(lb, 2, col)
+            lb.setStyleSheet("QLabel { font-size: 8pt; }")
+            sens_grid.addWidget(lb, 1, col+4)
             sp = QtWidgets.QDoubleSpinBox()
             sp.setRange(-1.0, 1.0); sp.setValue(r_defaults[col])
-            sp.setSingleStep(0.1); sp.setDecimals(3)
-            gain_lay.addWidget(sp, 3, col); self.gain_r.append(sp)
-        gain.setLayout(gain_lay)
-        layout.addWidget(gain)
+            sp.setSingleStep(0.1); sp.setDecimals(2)
+            sp.setMaximumWidth(60)
+            sens_grid.addWidget(sp, 2, col+4); self.gain_r.append(sp)
+        sens.setLayout(sens_grid)
+        sens.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
+        layout.addWidget(sens)
 
         self.setLayout(layout)
 
@@ -268,11 +311,67 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
     def toggle_space_mode(self):
         self.camera_space = not self.camera_space
         if self.camera_space:
-            self.space_btn.setText("Cam")
+            self.space_btn.setText("Cam Space")
             self.space_btn.setStyleSheet("QPushButton { background: #2a4a6a; color: #fff; }")
         else:
-            self.space_btn.setText("Abs")
+            self.space_btn.setText("Abs Space")
             self.space_btn.setStyleSheet("QPushButton { background: #6a2a2a; color: #fff; }")
+
+    def _on_ch_toggle(self, idx):
+        """Channel toggle: click=on/off, Alt+click=solo/unsolo"""
+        modifiers = QtWidgets.QApplication.keyboardModifiers()
+        alt_held = bool(modifiers & QtCore.Qt.AltModifier)
+
+        if alt_held:
+            if self.ch_solo == idx:
+                # Unsolo: restore previous state
+                self.ch_solo = None
+                self.ch_active = list(self.ch_prev)
+            else:
+                # Solo this channel
+                self.ch_prev = list(self.ch_active)
+                self.ch_solo = idx
+                self.ch_active = [i == idx for i in range(6)]
+        else:
+            # Simple toggle
+            if self.ch_solo is not None:
+                self.ch_solo = None
+                self.ch_active = list(self.ch_prev)
+            self.ch_active[idx] = not self.ch_active[idx]
+
+        self._update_ch_buttons()
+
+    def _ch_set_all(self, on):
+        self.ch_solo = None
+        self.ch_active = [on] * 6
+        self._update_ch_buttons()
+
+    def _ch_toggle_group(self, start):
+        """Toggle all 3 channels in group (0=Txyz, 3=Rxyz)"""
+        self.ch_solo = None
+        all_on = all(self.ch_active[start:start+3])
+        new_val = not all_on
+        for i in range(start, start+3):
+            self.ch_active[i] = new_val
+        self._update_ch_buttons()
+
+    def _update_ch_buttons(self):
+        colors_on = ['#c44', '#4c4', '#44c', '#c44', '#4c4', '#44c']
+        for i in range(6):
+            if self.ch_active[i]:
+                self.ch_btns[i].setStyleSheet(
+                    f"QPushButton {{ background: {colors_on[i]}; color: #fff; font-size: 9pt; }}")
+            else:
+                self.ch_btns[i].setStyleSheet(
+                    "QPushButton { background: #444; color: #888; font-size: 9pt; }")
+        # T master: highlight if all 3 T channels on
+        t_on = all(self.ch_active[0:3])
+        self.t_master_btn.setStyleSheet(
+            f"QPushButton {{ background: {'#0a0' if t_on else '#444'}; color: {'#fff' if t_on else '#888'}; font-size: 9pt; }}")
+        # R master: highlight if all 3 R channels on
+        r_on = all(self.ch_active[3:6])
+        self.r_master_btn.setStyleSheet(
+            f"QPushButton {{ background: {'#0a0' if r_on else '#444'}; color: {'#fff' if r_on else '#888'}; font-size: 9pt; }}")
 
     def _update_driver_btn(self):
         if self.driver_enabled:
@@ -363,8 +462,15 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
             tv = np.array([tx, ty, tz], dtype=np.float64) / 350.0 * t_sens * gt
             rv = np.array([rx, ry, rz], dtype=np.float64) / 350.0 * r_sens * gr
 
+            # Apply channel mask with corrected mapping:
+            #   Button: Tx Ty Tz Rx Ry Rz
+            #   Maps:  tv[0] tv[2] tv[1] rv[0] rv[2] rv[1]
+            cm = [1.0 if a else 0.0 for a in self.ch_active]
+            tv = tv * np.array([cm[0], cm[2], cm[1]], dtype=np.float64)
+            rv = rv * np.array([cm[3], cm[5], cm[4]], dtype=np.float64)
+
             # Pre-mapped Houdini world coords
-            hx, hy, hz = -tv[0], -tv[2], tv[1]
+            hx, hy, hz = tv[0], -tv[2], tv[1]
             hrx, hry, hrz = rv[0], -rv[2], rv[1]
 
             if not self.driver_enabled:
@@ -400,7 +506,7 @@ class SpaceMouseReceiver(QtWidgets.QWidget):
         cam_label = f"[Cam]" if viewport and viewport.camera() else "[No Cam]"
         mode = "[Object]" if not self.driver_enabled else "[Camera]"
         sp_mode = "Cam" if self.camera_space else "Abs"
-        hx, hy, hz = -tv[0], -tv[2], tv[1]
+        hx, hy, hz = tv[0], -tv[2], tv[1]
         info = (f"{mode} [{sp_mode}] | {cam_label}\n"
                 f"raw T:({tx:+4d},{ty:+4d},{tz:+4d}) R:({rx:+4d},{ry:+4d},{rz:+4d})\n"
                 f"Hou  X:{hx:+.5f} Y:{hy:+.5f} Z:{hz:+.5f} R:({rv[0]:+.4f},{rv[1]:+.4f},{rv[2]:+.4f})")
