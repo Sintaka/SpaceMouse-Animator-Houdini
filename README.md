@@ -1,7 +1,7 @@
 # SpaceMouse for Houdini
 
 3Dconnexion SpaceExplorer driver for Houdini -- camera navigation + object manipulation.
-
+<img width="3550" height="1787" alt="屏幕截图 2026-06-29 222900" src="https://github.com/user-attachments/assets/9b56e377-3837-48cc-8dde-c7aae0a4bc4b" />
 ---
 
 ## English
