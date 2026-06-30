@@ -1,0 +1,18 @@
+src/
+  __init__.py                - Package marker
+  config.py                  - Hardware IDs, sensitivity defaults, axis mapping tables
+  debug_utils.py             - Tee-print to stdout + debug log file (writes to ./debug/)
+  matrix_utils.py            - numpy <-> hou.Matrix4/3 conversions, Rodrigues, Gram-Schmidt
+  hid_reader.py              - HID device enumeration, daemon read thread, queue.Queue output
+  data_processor.py          - Raw axis -> Houdini world coordinates (sensitivity, gain, mask, remap)
+  target_detector.py         - Detect current movable target: OBJ node / parm tuple / channel parms / APEX
+  target_mover.py            - Apply translation/rotation deltas per target type
+  driver_control.py          - Toggle 3DxWare driver by editing SideFX_HoudiniFX.xml
+  apex_utils.py              - APEX skeleton world-transform lookup, scoped parm detection
+  ui_panel.py                - Pure Qt widget hierarchy and layout (no business logic)
+  spacemouse_controller.py   - Orchestrator: wires HID reader + UI + processor + detector + mover
+  panel_entry.py             - Minimal script to paste into Houdini Python Panel (SRC_PATH + import)
+  debug/
+    spacemouse_sender.py     - Standalone HID -> UDP broadcaster (testing without Houdini)
+    spacemouse_read.py       - HID report hex dump diagnostic tool
+    spacemouse_debug.log     - Runtime debug log (auto-generated, gitignored)

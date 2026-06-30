@@ -81,3 +81,8 @@ HoudiniScene/
 
 API_Change_Viewport_Handle.txt
 ApexScriptSamples/
+
+/debug/
+!src/debug/
+src/debug/*.log
+release/
