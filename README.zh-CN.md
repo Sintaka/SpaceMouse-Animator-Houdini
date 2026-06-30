@@ -1,5 +1,7 @@
 # SpaceMouse for Houdini
 
+[English](README.md)
+
 3Dconnexion SpaceExplorer 驱动 for Houdini — 相机导航 + 物体操控。
 
 <img width="3550" height="1787" alt="SpaceMouse Houdini Panel" src="https://github.com/user-attachments/assets/9b56e377-3837-48cc-8dde-c7aae0a4bc4b" />
