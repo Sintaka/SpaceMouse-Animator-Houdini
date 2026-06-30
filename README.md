@@ -12,6 +12,7 @@
 ```bash
 # Install hidapi in Houdini's built-in Python / 在 Houdini 内置 Python 中安装 hidapi
 "C:\Program Files\Side Effects Software\Houdini 21.0.729\python311\python.exe" -m pip install hidapi
+```
 
 ## English
 
