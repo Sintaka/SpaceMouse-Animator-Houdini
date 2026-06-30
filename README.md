@@ -4,6 +4,15 @@
 <img width="3550" height="1787" alt="屏幕截图 2026-06-29 222900" src="https://github.com/user-attachments/assets/9b56e377-3837-48cc-8dde-c7aae0a4bc4b" />
 ---
 
+**⚠️ NEW: Unified version available!** `spacemouse_houdini.py` combines sender + receiver into one file. Just copy to Python Panel and run — no UDP networking needed!
+
+**⚠️ 最新：已推出合一版本！** `spacemouse_houdini.py` 将发送端和接收端合二为一，直接复制到 Python Panel 即可运行——无需 UDP 网络转发！
+
+**Installation requirement / 安装依赖：**
+```bash
+# Install hidapi in Houdini's built-in Python / 在 Houdini 内置 Python 中安装 hidapi
+"C:\Program Files\Side Effects Software\Houdini 21.0.729\python311\python.exe" -m pip install hidapi
+
 ## English
 
 ### Overview
@@ -18,7 +27,7 @@ Reads raw HID data from a 3Dconnexion SpaceExplorer (VID:046D PID:C627) at ~125 
 | Type | Method |
 |------|--------|
 | OBJ (cam, geo, null, etc.) | `setWorldTransform()` |
-| Transform SOP / Edit SOP | `parm.isScoped()` -> regex match -> `parm.set()` |
+| Transform SOP | `parm.isScoped()` -> regex match -> `parm.set()` |
 | Rig Pose | `parm.isScoped()` -> regex match multiparm instances (`t0x`, `r1y`, etc.) |
 | APEX Scene Animate | `state.control_selection` + `rig.graph_parms` (local only, see limitations) |
 | LOP Transform | `parmTuple('t')` / `parmTuple('r')` direct write |
@@ -120,7 +129,7 @@ The receiver edits `%APPDATA%\3Dconnexion\3DxWare\Cfg\SideFX_HoudiniFX.xml`, tog
 | 类型 | 实现方式 |
 |------|---------|
 | OBJ (cam, geo, null 等) | `setWorldTransform()` |
-| Transform SOP / Edit SOP | `parm.isScoped()` -> 正则匹配 -> `parm.set()` |
+| Transform SOP | `parm.isScoped()` -> 正则匹配 -> `parm.set()` |
 | Rig Pose | `parm.isScoped()` -> 正则匹配 multiparm 实例 (`t0x`, `r1y` 等) |
 | APEX Scene Animate | `state.control_selection` + `rig.graph_parms` (仅本地变换, 见限制) |
 | LOP Transform | `parmTuple('t')` / `parmTuple('r')` 直写 |
